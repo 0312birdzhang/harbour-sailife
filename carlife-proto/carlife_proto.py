@@ -317,7 +317,8 @@ def extract_au(buf):
     au = buf[positions[0][0]:frame_end]
     return au, buf[frame_end:]
 
-def video_loop_fifo(fd, stop):
+def video_loop_fifo(stop):
+    global g_fd
     src = os.environ.get('CARLIFE_VIDEO_FILE', '')
     if src:
         try:
@@ -340,7 +341,7 @@ def video_loop_fifo(fd, stop):
         print('test file: %d frames' % len(frames), flush=True)
         i = 0
         while not stop.is_set():
-            send_frame(fd, VIDEO, export_video(MSG_VIDEO_DATA, frames[i % len(frames)]))
+            send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, frames[i % len(frames)]))
             i += 1
             time.sleep(0.033)
         return
@@ -367,15 +368,15 @@ def video_loop_fifo(fd, stop):
             au, buf = extract_au(buf)
             if au is None:
                 break
-            send_frame(fd, VIDEO, export_video(MSG_VIDEO_DATA, au))
+            send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, au))
     fifo.close()
 
 vis_w, vis_h = 1920, 720
 video_thread = None
 video_stop = threading.Event()
 print('carlife_proto started, waiting...', flush=True)
-fd = open_dev()
-sr = StreamReader(fd)
+g_fd = open_dev()
+sr = StreamReader(g_fd)
 print('connected', flush=True)
 
 while True:
@@ -384,12 +385,12 @@ while True:
     except (OSError, EOFError):
         print('[%s] lost connection, reopening...' % time.strftime('%H:%M:%S'), flush=True)
         try:
-            os.close(fd)
+            os.close(g_fd)
         except OSError:
             pass
         time.sleep(1)
-        fd = open_dev()
-        sr = StreamReader(fd)
+        g_fd = open_dev()
+        sr = StreamReader(g_fd)
         print('reconnected', flush=True)
         continue
     if frame is None:
@@ -404,10 +405,10 @@ while True:
             if len(payload) >= 4:
                 v = struct.unpack('>i', payload[0:4])[0]
             print('  HU protocol version value=%s' % v, flush=True)
-            send_frame(fd, CMD, export_cmd(MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS, msg_match_status()))
+            send_frame(g_fd, CMD, export_cmd(MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS, msg_match_status()))
             print('  -> PROTOCOL_VERSION_MATCH_STATUS', flush=True)
         elif service == MSG_CMD_HU_INFO:
-            send_frame(fd, CMD, export_cmd(MSG_CMD_MD_INFO, msg_device_info()))
+            send_frame(g_fd, CMD, export_cmd(MSG_CMD_MD_INFO, msg_device_info()))
             print('  -> MD_INFO', flush=True)
         elif service == MSG_CMD_VIDEO_ENCODER_INIT:
             try:
@@ -421,18 +422,18 @@ while True:
             except Exception:
                 pass
             enc = msg_video_encoder_info(vis_w, vis_h, 30)
-            send_frame(fd, CMD, export_cmd(MSG_CMD_VIDEO_ENCODER_INIT_DONE, enc))
-            send_frame(fd, CMD, export_cmd(MSG_CMD_FOREGROUND, None))
+            send_frame(g_fd, CMD, export_cmd(MSG_CMD_VIDEO_ENCODER_INIT_DONE, enc))
+            send_frame(g_fd, CMD, export_cmd(MSG_CMD_FOREGROUND, None))
             print('  -> VIDEO_ENCODER_INIT_DONE + FOREGROUND (%dx%d)' % (vis_w, vis_h), flush=True)
         elif service == MSG_CMD_STATISTIC_INFO:
-            send_frame(fd, CMD, export_cmd(MSG_CMD_MD_AUTHEN_RESULT, msg_authen_result()))
+            send_frame(g_fd, CMD, export_cmd(MSG_CMD_MD_AUTHEN_RESULT, msg_authen_result()))
             print('  -> MD_AUTHEN_RESULT', flush=True)
         elif service == MSG_CMD_VIDEO_ENCODER_START:
-            send_frame(fd, MEDIA, export_video(MSG_MEDIA_INIT, msg_music_init()))
+            send_frame(g_fd, MEDIA, export_video(MSG_MEDIA_INIT, msg_music_init()))
             print('  -> MEDIA_INIT', flush=True)
             if not video_thread or not video_thread.is_alive():
                 video_stop.clear()
-                video_thread = threading.Thread(target=video_loop_fifo, args=(fd, video_stop), daemon=True)
+                video_thread = threading.Thread(target=video_loop_fifo, args=(video_stop,), daemon=True)
                 video_thread.start()
                 print('  video thread started', flush=True)
         else:
@@ -440,7 +441,7 @@ while True:
     elif msg_type == MEDIA:
         print('[%s] MEDIA len=%d' % (time.strftime('%H:%M:%S'), len(body)), flush=True)
     elif msg_type == TOUCH:
-        handle_touch(fd, body)
+        handle_touch(g_fd, body)
     elif msg_type == VIDEO:
         print('[%s] VIDEO len=%d' % (time.strftime('%H:%M:%S'), len(body)), flush=True)
     else:
