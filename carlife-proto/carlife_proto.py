@@ -363,7 +363,12 @@ def video_loop_fifo(stop):
             continue
         buf += d
         if len(buf) > 4 * 1024 * 1024:
-            buf = buf[-2 * 1024 * 1024:]
+            # Truncate to the last start code so we never split a frame:
+            # cutting mid-NAL makes the head unit lose sync (black screen).
+            i = buf.rfind(b'\x00\x00\x00\x01')
+            if i == -1:
+                i = buf.rfind(b'\x00\x00\x01')
+            buf = buf[i:] if i != -1 else b''
         while True:
             au, buf = extract_au(buf)
             if au is None:

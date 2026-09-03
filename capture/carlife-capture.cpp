@@ -49,6 +49,9 @@ int main(int argc, char **argv)
 
     signal(SIGINT, onSig);
     signal(SIGTERM, onSig);
+    // Writing to the video FIFO when no reader is attached (e.g. the car
+    // disconnected between reconnects) must not kill us with SIGPIPE.
+    signal(SIGPIPE, SIG_IGN);
 
     FILE *out = stdout;
     if (outPath && strcmp(outPath, "-") != 0) {
