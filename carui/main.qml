@@ -101,7 +101,7 @@ Window {
                     color: "#ffffff"
                     font.pixelSize: 24
                     font.bold: true
-                    text: modelData.name
+                    text: (carAppNames && carAppNames[index] !== undefined && carAppNames[index] !== "") ? carAppNames[index] : modelData.name
                 }
             }
         }
