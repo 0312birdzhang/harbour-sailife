@@ -243,12 +243,18 @@ def open_dev():
             time.sleep(2)
 
 def find_sc(b, s):
-    i = b.find(b'\x00\x00\x00\x01', s)
-    if i != -1:
-        return i, 4
-    i = b.find(b'\x00\x00\x01', s)
-    if i != -1:
-        return i, 3
+    """Return the earliest start code (3- or 4-byte) at/after s.
+
+    The encoder uses a 3-byte start code (00 00 01) whenever the previous
+    NAL does not end in 0x00, e.g. the IDR slice after the SPS/PPS. A naive
+    'find 4-byte first' skips those and wrongly lands on the next 4-byte
+    frame boundary, so the head unit never sees an IDR (black screen)."""
+    i4 = b.find(b'\x00\x00\x00\x01', s)
+    i3 = b.find(b'\x00\x00\x01', s)
+    if i4 != -1 and (i3 == -1 or i4 <= i3):
+        return i4, 4
+    if i3 != -1:
+        return i3, 3
     return -1, 0
 
 def is_new_frame_start(nal_head):
@@ -321,14 +327,14 @@ def frame_has_idr(au):
     """True if this access unit begins with an IDR slice (type 5)."""
     pos = 0
     while True:
-        i = au.find(b'\x00\x00\x00\x01', pos)
-        if i == -1:
-            i = au.find(b'\x00\x00\x01', pos)
-            if i == -1:
-                break
-            sc = 3
+        i4 = au.find(b'\x00\x00\x00\x01', pos)
+        i3 = au.find(b'\x00\x00\x01', pos)
+        if i4 != -1 and (i3 == -1 or i4 <= i3):
+            i, sc = i4, 4
+        elif i3 != -1:
+            i, sc = i3, 3
         else:
-            sc = 4
+            break
         if i + sc < len(au):
             t = au[i + sc] & 0x1f
             if t in (1, 5):
