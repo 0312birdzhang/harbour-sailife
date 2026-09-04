@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 imira-patches/imira-comp-arm
 rpm/payload/
+carui/Makefile
+carui/carui
+carui/*.o
+carui/main.moc
