@@ -85,15 +85,41 @@ static QVector<AppInfo> readApps()
     return apps;
 }
 
-static void launchApp(const QString &exec)
+static QHash<QString, qint64> s_appPids;   // exec -> last launched pid
+
+static qint64 launchApp(const QString &exec)
 {
     QString cmd = QStringLiteral(
         "QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=imira-comp-0 "
         "QT_IM_MODULE=none "
         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/100000/dbus/user_bus_socket ");
     cmd += QStringLiteral("exec ") + exec;
+    qint64 pid = 0;
     QProcess::startDetached(QStringLiteral("/bin/sh"),
-                            QStringList() << QStringLiteral("-c") << cmd);
+                            QStringList() << QStringLiteral("-c") << cmd,
+                            QString(), &pid);
+    return pid;
+}
+
+// A hidden app window (imira-comp "home" minimizes instead of destroying;
+// see imira-comp.cpp hideWindow) is reused so the same surface keeps its
+// input focus — re-launching would hit Qt 5.6's stale-focus bug.
+static bool isPidHidden(qint64 pid)
+{
+    QFile f(QStringLiteral("/tmp/imira-hidden"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    return f.readAll().contains(QByteArray::number(pid));
+}
+
+static void showAppWindow(qint64 pid)
+{
+    FILE *tf = fopen("/tmp/imira-touch", "a");
+    if (tf) {
+        fprintf(tf, "S %lld\n", pid);
+        fclose(tf);
+    }
+    fprintf(stderr, "carui: show app pid=%lld\n", pid);
 }
 
 static bool imiraHasApp()
@@ -196,9 +222,15 @@ int main(int argc, char **argv)
                                     };
                                     walk(content);
                                     if (hit && tileIdx >= 0 && tileIdx < apps.size()) {
-                                        fprintf(stderr, "carui: launching %s\n",
-                                                apps[tileIdx].name.toUtf8().constData());
-                                        launchApp(apps[tileIdx].exec);
+                                        const AppInfo &a = apps[tileIdx];
+                                        qint64 pid = s_appPids.value(a.exec);
+                                        if (pid > 0 && isPidHidden(pid)) {
+                                            showAppWindow(pid);
+                                        } else {
+                                            fprintf(stderr, "carui: launching %s\n",
+                                                    a.name.toUtf8().constData());
+                                            s_appPids[a.exec] = launchApp(a.exec);
+                                        }
                                     }
                                 }
                             }

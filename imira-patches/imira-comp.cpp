@@ -661,6 +661,7 @@ public:
             // Fullscreen car-UI (our own driver UI): no window chrome, no
             // dock — it IS the whole 1920x720 screen.
             if (title.contains(QLatin1String("CarLife UI"))) {
+                m_caruiItem = item;
                 item->setParentItem(m_window->contentItem());
                 item->setSize(QSizeF(m_width, m_height));
                 item->setPosition(QPointF(0, 0));
@@ -675,6 +676,12 @@ public:
                                             title.isEmpty()
                                                 ? QStringLiteral("App")
                                                 : title);
+            // Car-UI mode: every app fills the whole 1920x720 screen. Apps
+            // that don't honour requestSize get letterboxed/scaled into the
+            // fixed frame, but the frame is fullscreen so head-unit taps
+            // anywhere always hit the top window.
+            chrome->userSize = QSizeF(m_width, m_height);
+            chrome->setPosition(QPointF(0, 0));
             setAppRunning(1);
             // Cascade new windows instead of stacking them dead center.
             const int n = m_chromes.count();
@@ -712,11 +719,12 @@ public:
                     surface->size().width(), surface->size().height(),
                     qPrintable(title), item->isYInverted());
         });
-        // A desktop-sized window, not a phone screen: ask the client to lay
-        // itself out for the workspace (output minus dock and title bar).
-        surface->requestSize(QSize(m_width - 96,
-                                   m_height - DockItem::kHeight
-                                       - WindowChrome::kTitle - 48));
+        // Car-UI mode: the client must lay out for the head unit's
+        // 1920x720 screen (NOT the connected device's display). Request the
+        // full output minus the window title bar so every app fills the
+        // screen and head-unit taps map 1:1.
+        surface->requestSize(QSize(m_width,
+                                   m_height - WindowChrome::kTitle));
     }
 
     // Topmost window under the cursor (stacking order = list order).
@@ -868,6 +876,68 @@ public:
         chrome->surfaceItem()->surface()->client()->kill(SIGTERM);
     }
 
+    // Car-UI "home": hide the app window instead of destroying it. Qt 5.6's
+    // synthetic pointer loses its internal focus when a surface is destroyed,
+    // and a freshly opened window can never regain it (first run works, every
+    // re-entry taps are silently dropped). Keeping the window alive and just
+    // hiding it preserves the focus, so a later "show" brings the same window
+    // back fully interactive.
+    void hideWindow(WindowChrome *chrome)
+    {
+        if (!m_chromes.removeAll(chrome))
+            return;
+        m_hidden.append(chrome);
+        chrome->setVisible(false);
+        if (m_chromes.isEmpty())
+            setAppRunning(0);
+        QFile f(QStringLiteral("/tmp/imira-hidden"));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            f.write(QByteArray::number(
+                        chrome->surfaceItem()->surface()->client()
+                            ->processId()));
+            f.write("\n");
+            f.close();
+        }
+        fprintf(stderr, "imira-comp: hide window pid=%lld (%d hidden, %d shown)\n",
+                (long long)chrome->surfaceItem()->surface()->client()
+                    ->processId(),
+                m_hidden.count(), m_chromes.count());
+        if (m_dock)
+            m_dock->update();
+    }
+
+    bool showWindowByPid(qint64 pid)
+    {
+        for (WindowChrome *c : m_hidden) {
+            if (c->surfaceItem()->surface()->client()->processId() == pid) {
+                m_hidden.removeAll(c);
+                m_chromes.append(c);
+                c->setVisible(true);
+                raise(c);
+                setAppRunning(1);
+                QFile f(QStringLiteral("/tmp/imira-hidden"));
+                if (f.open(QIODevice::WriteOnly | QIODevice::ReadOnly)) {
+                    const QByteArray all = f.readAll();
+                    f.close();
+                    QFile w(QStringLiteral("/tmp/imira-hidden"));
+                    if (w.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        for (const QByteArray &ln :
+                             all.split('\n')) {
+                            if (!ln.isEmpty() && ln.toLongLong() != pid)
+                                w.write(ln);
+                                w.write("\n");
+                        }
+                        w.close();
+                    }
+                }
+                fprintf(stderr, "imira-comp: show window pid=%lld (%d hidden)\n",
+                        (long long)pid, m_hidden.count());
+                return true;
+            }
+        }
+        return false;
+    }
+
     void removeChrome(WindowChrome *chrome)
     {
         if (!m_chromes.removeAll(chrome))
@@ -876,6 +946,12 @@ public:
             setAppRunning(0);
         fprintf(stderr, "imira-comp: window gone (%d left)\n",
                 m_chromes.count());
+        // Release input focus held by the closing window so a freshly
+        // opened window receives mouse events (Qt 5.6 routes sendMouse* to
+        // the current focus surface; a stale focus swallows new windows).
+        QWaylandInputDevice *seat = defaultInputDevice();
+        if (seat)
+            seat->setKeyboardFocus(nullptr);
         // Out of the scene NOW — the deferred delete alone left a ghost
         // frame on screen when a client died behind our back.
         chrome->setVisible(false);
@@ -899,12 +975,30 @@ public:
         // corner (width()-kTitle). Car taps there close the top window.
         if (action == 1 && !m_chromes.isEmpty() &&
             y < 70 && x > (int)m_width - 130) {
-            fprintf(stderr, "imira: close tap at %d,%d\n", x, y);
-            closeWindow(m_chromes.last());
+            fprintf(stderr, "imira: home tap at %d,%d\n", x, y);
+            hideWindow(m_chromes.last());
             return;
         }
         QPointF pos(x, y);
+        if (action == 0) {
+            m_carPress = pos;
+            m_carPressing = true;
+        } else if (action == 1) {
+            // The head unit sends up at the finger's lift position, which
+            // drifts from the press point. A tap (calendar cells, small
+            // buttons) only fires when press and release land in the same
+            // spot, so release where we pressed.
+            if (m_carPressing)
+                pos = m_carPress;
+            m_carPressing = false;
+        }
         WindowChrome *chrome = chromeAt(pos);
+        if (!chrome && !m_chromes.isEmpty()) {
+            // Fall back to the top window so taps that land on the chrome
+            // bar / letterbox area still reach the app.
+            chrome = m_chromes.last();
+            fprintf(stderr, "imira: touch fallback to top window\n");
+        }
         if (!chrome) {
             fprintf(stderr, "imira: touch a=%d x=%d y=%d NO chrome\n",
                     action, x, y);
@@ -912,14 +1006,44 @@ public:
         }
         QWaylandSurfaceItem *item = chrome->surfaceItem();
         QPointF local = item->mapFromScene(pos);
-        fprintf(stderr, "imira: touch a=%d x=%d y=%d -> local %.0f,%.0f\n",
-                action, x, y, local.x(), local.y());
-        seat->sendMouseMoveEvent(item, local, pos);
+        fprintf(stderr,
+                "imira: touch a=%d x=%d y=%d on '%s' item(%.0f,%.0f %.0fx%.0f)"
+                " rot=%.0f scale=%.2f bufsz=%dx%d -> local %.0f,%.0f\n",
+                action, x, y,
+                qPrintable(item->surface()->title()),
+                item->x(), item->y(), item->width(), item->height(),
+                item->rotation(), item->scale(),
+                item->surface()->size().width(),
+                item->surface()->size().height(),
+                local.x(), local.y());
+        // Qt 5.6's sendMousePressEvent has no item argument: it delivers to the
+        // *current mouse-focus surface*. QWaylandInputDevice::setMouseFocus
+        // refuses a surface whose wl_resource "destroyed" flag (offset 297
+        // bit 0) is set. When a window is closed and a fresh one reuses the
+        // same wl_resource memory, that stale flag stays set, so the new
+        // window can never get focus and taps are silently dropped. Clear
+        // the stale flag so the focus is accepted.
+        // Qt 5.6's synthetic pointer (sendMouse*) keeps an internal focus
+        // that survives window destruction and never moves to a window
+        // that reuses the freed wl_resource memory — only the first app
+        // ever receives taps. Instead of fighting that, inject QMouseEvent
+        // straight into the Qt Quick scene: QQuickWindow hit-tests the
+        // scene every event, so each tap is routed to whatever window is
+        // under the cursor, with no stale focus involved.
+        QPointF scene = pos;
+        QPointF screen = pos;
         if (action == 0) {
             raise(chrome);
-            seat->sendMousePressEvent(Qt::LeftButton, local, pos);
+            QMouseEvent mv(QEvent::MouseMove, scene, scene, screen,
+                           Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(m_window, &mv);
+            QMouseEvent pr(QEvent::MouseButtonPress, scene, scene, screen,
+                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(m_window, &pr);
         } else if (action == 1) {
-            seat->sendMouseReleaseEvent(Qt::LeftButton, local, pos);
+            QMouseEvent rl(QEvent::MouseButtonRelease, scene, scene, screen,
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(m_window, &rl);
         }
     }
 
@@ -941,6 +1065,10 @@ private:
     int m_height;
     int m_zCounter = 0;
     QVector<WindowChrome *> m_chromes;
+    QVector<WindowChrome *> m_hidden;    // car-UI "home" minimizes, not closes
+    QPointF m_carPress;      // head-unit press position (tap-release reuse)
+    bool m_carPressing = false;
+    QWaylandSurfaceItem *m_caruiItem = nullptr;  // always-present background
     DockItem *m_dock = nullptr;
 };
 
@@ -1414,6 +1542,12 @@ int main(int argc, char *argv[])
         if (f) {
             char line[64];
             while (fgets(line, sizeof(line), f)) {
+                if (line[0] == 'S') {
+                    qint64 pid = strtoll(line + 1, nullptr, 10);
+                    if (pid > 0)
+                        compositor.showWindowByPid(pid);
+                    continue;
+                }
                 int action, x, y;
                 if (sscanf(line, "%d %d %d", &action, &x, &y) == 3)
                     compositor.injectCarTouch(action, x, y);
