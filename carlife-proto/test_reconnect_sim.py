@@ -132,4 +132,24 @@ fd = acquire()
 assert fd is None, fd
 print('F ok: no car attached -> acquire returns None cleanly')
 
+# G: fresh boot at default PID -> L0 runs the AOA dance itself,
+#    no START (no car) -> times out and restores the accessory PID
+g['_netlink_uevent_socket'] = lambda: None
+sysfs.pid = '0x4ee1'
+Clock.t += 100; sysfs.events.clear()
+fd = acquire()
+assert sysfs.pid == '0x2d00' and 'pid=0x2d00' in sysfs.events, (sysfs.pid, sysfs.events)
+assert g['g_recover_level'] == 0, g['g_recover_level']
+print('G ok: fresh boot at default PID -> L0 ran AOA dance, PID restored')
+
+# H: fresh boot at default PID, HU answers with ACCESSORY=START
+ready[0] = True
+sel.select = fake_select
+sysfs.pid = '0x4ee1'
+Clock.t += 100; sysfs.events.clear()
+fd = acquire()
+assert sysfs.pid == '0x2d00' and fd == 42, (sysfs.pid, fd)
+assert sysfs.events.count('unbind') == 1, sysfs.events   # single flip, no restore
+print('H ok: L0 AOA with START -> switched to 0x2d00, opened')
+
 print('ALL SCENARIOS PASS')

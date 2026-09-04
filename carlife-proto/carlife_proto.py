@@ -427,6 +427,11 @@ def acquire_link():
         enter_accessory_mode()
     elif g_recover_level == 1:
         rebind_udc()
+    elif gadget_pid() == PID_DEFAULT:
+        # Fresh boot (or first plug): nobody has switched us into accessory
+        # mode yet. Run the AOA dance ourselves — the chain is otherwise
+        # self-contained, there is no external aoa_manager service.
+        enter_accessory_mode()
     if not wait_configured(20):
         print('[%s] UDC not configured, retrying later' % ts(), flush=True)
         return None
