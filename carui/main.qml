@@ -9,6 +9,25 @@ Window {
     color: "#11131a"
     title: "CarLife UI"
 
+    // Head-unit taps arrive as a real mouse (uinput) routed by the
+    // compositor; hit-test the tiles ourselves and launch via the C++
+    // controller.
+    MouseArea {
+        anchors.fill: parent
+        onClicked: {
+            for (var i = 0; i < tileRepeater.count; i++) {
+                var item = tileRepeater.itemAt(i)
+                if (!item) continue
+                var pos = item.mapToItem(root.contentItem, 0, 0)
+                if (mouse.x >= pos.x && mouse.x < pos.x + item.width &&
+                    mouse.y >= pos.y && mouse.y < pos.y + item.height) {
+                    carController.tileClicked(i)
+                    return
+                }
+            }
+        }
+    }
+
     property var tileModel: [
         { icon: "🧭", name: "导航", color: "#2e6bff" },
         { icon: "🎵", name: "音乐", color: "#b23bff" },

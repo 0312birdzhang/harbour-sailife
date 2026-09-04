@@ -130,20 +130,44 @@ static bool imiraHasApp()
     return f.readAll().trimmed() == QStringLiteral("1");
 }
 
+static QVector<AppInfo> g_apps;
+
+// The compositor is the unmodified harbour-imira one: head-unit taps arrive
+// as a REAL input-device mouse (uinput) and hit the Qt Quick scene, so
+// carui must handle its own clicks with a MouseArea in QML. This controller
+// is the bridge from QML to the launcher logic.
+class CarUiController : public QObject
+{
+    Q_OBJECT
+public:
+    explicit CarUiController(QObject *parent = nullptr) : QObject(parent) {}
+
+    Q_INVOKABLE void tileClicked(int index)
+    {
+        if (index < 0 || index >= g_apps.size())
+            return;
+        const AppInfo &a = g_apps[index];
+        fprintf(stderr, "carui: launching %s\n", a.name.toUtf8().constData());
+        launchApp(a.exec);
+    }
+};
+
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
     app.setApplicationName("carlife-ui");
     QQmlApplicationEngine engine;
 
-    QVector<AppInfo> apps = readApps();
+    g_apps = readApps();
+    CarUiController controller;
+    engine.rootContext()->setContextProperty("carController", &controller);
     QStringList names;
-    for (const AppInfo &a : apps)
+    for (const AppInfo &a : g_apps)
         names << (a.name.isEmpty() ? a.category : a.name);
     engine.rootContext()->setContextProperty("carAppNames",
                                              QVariant::fromValue(names));
-    fprintf(stderr, "carui: %d apps configured\n", apps.size());
-    for (const AppInfo &a : apps)
+    fprintf(stderr, "carui: %d apps configured\n", g_apps.size());
+    for (const AppInfo &a : g_apps)
         fprintf(stderr, "  %s -> %s (%s)\n", a.category.toUtf8().constData(),
                 a.name.toUtf8().constData(), a.exec.toUtf8().constData());
 
@@ -168,7 +192,7 @@ int main(int argc, char **argv)
     int fifo = open("/tmp/carui-touch", O_RDONLY | O_NONBLOCK);
     if (fifo >= 0) {
         QTimer *timer = new QTimer(&app);
-        QObject::connect(timer, &QTimer::timeout, [win, &apps, fifo]() {
+        QObject::connect(timer, &QTimer::timeout, [win, fifo]() {
             static char line[128];
             static size_t pos = 0;
             char buf[256];
@@ -221,16 +245,10 @@ int main(int argc, char **argv)
                                             walk(c);
                                     };
                                     walk(content);
-                                    if (hit && tileIdx >= 0 && tileIdx < apps.size()) {
-                                        const AppInfo &a = apps[tileIdx];
-                                        qint64 pid = s_appPids.value(a.exec);
-                                        if (pid > 0 && isPidHidden(pid)) {
-                                            showAppWindow(pid);
-                                        } else {
-                                            fprintf(stderr, "carui: launching %s\n",
-                                                    a.name.toUtf8().constData());
-                                            s_appPids[a.exec] = launchApp(a.exec);
-                                        }
+                                    if (hit && tileIdx >= 0 && tileIdx < g_apps.size()) {
+                                        fprintf(stderr, "carui: launching %s\n",
+                                                g_apps[tileIdx].name.toUtf8().constData());
+                                        launchApp(g_apps[tileIdx].exec);
                                     }
                                 }
                             }
@@ -248,3 +266,5 @@ int main(int argc, char **argv)
     fprintf(stderr, "carui: loaded %s\n", qml);
     return app.exec();
 }
+
+#include "main.moc"

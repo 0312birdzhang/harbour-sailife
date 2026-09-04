@@ -1,4 +1,4 @@
-import os, struct, time, sys, select, threading, subprocess
+import os, struct, time, sys, select, threading, subprocess, fcntl, ctypes
 
 DEV = '/dev/usb/usb_accessory'
 FIFO = '/tmp/cast.h264'
@@ -43,6 +43,74 @@ def start_touchd():
         print('touchd start fail: %s' % e, flush=True)
 touch_proc = None
 carui_touch_fd = None
+
+# --- uinput synthetic mouse ------------------------------------------------
+# The compositor (imira-comp, harbour-imira original) drives its windows from
+# a REAL input device (/dev/input/eventX). Its InputHandler consumes
+# EV_REL+EV_KEY and routes each click through the Qt Quick scene (hit-test),
+# which is exactly why multi-window switching works there but Qt 5.6's
+# synthetic sendMouse* (with its stale mouse-focus bug) does not. So the
+# head-unit touch is re-injected as a real relative mouse: EV_REL move +
+# EV_KEY BTN_LEFT click.
+UI_SET_EVBIT = 0x40045564  # _IOW('U', 100, int)
+UI_SET_RELBIT = 0x40045566  # _IOW('U', 102, int)
+UI_SET_KEYBIT = 0x40045565  # _IOW('U', 101, int)
+UI_DEV_SETUP  = 0x405C5503  # _IOW('U', 3, struct uinput_setup) size 92
+UI_DEV_CREATE = 0x5501      # _IO('U', 1)
+
+EV_SYN, EV_KEY, EV_REL = 0, 1, 2
+REL_X, REL_Y = 0, 1
+BTN_LEFT = 0x110
+
+_uinput_fd = None
+# imira-comp's InputHandler starts the cursor at the output centre.
+_mx, _my = HU_W // 2, HU_H // 2
+
+class _UinputSetup(ctypes.Structure):
+    # struct uinput_setup: input_id + name[80] + ff_effects_max (no max_effects
+    # on modern kernels; the extra field makes ioctl fail with EINVAL).
+    _fields_ = [("id", ctypes.c_uint16 * 4),
+                ("name", ctypes.c_char * 80),
+                ("ff_effects_max", ctypes.c_uint32)]
+
+def uinput_init():
+    global _uinput_fd
+    if _uinput_fd is not None:
+        return
+    fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+    for ev in (EV_REL, EV_KEY, EV_SYN):
+        fcntl.ioctl(fd, UI_SET_EVBIT, ev)
+    for rel in (REL_X, REL_Y):
+        fcntl.ioctl(fd, UI_SET_RELBIT, rel)
+    fcntl.ioctl(fd, UI_SET_KEYBIT, BTN_LEFT)
+    ds = _UinputSetup()
+    ds.name = b'carlife-mouse'
+    ds.id[0] = 3                 # BUS_USB
+    ds.id[1] = 1
+    fcntl.ioctl(fd, UI_DEV_SETUP, ds)
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    _uinput_fd = fd
+    print('uinput mouse created', flush=True)
+
+def uinput_ev(t, c, v):
+    # struct input_event: timeval (2x long) + __u16 type + __u16 code +
+    # __s32 value — value must be SIGNED (relative deltas can be negative).
+    os.write(_uinput_fd, struct.pack('llHHi', 0, 0, t, c, v))
+
+def uinput_move(x, y):
+    global _mx, _my
+    dx = int(x) - _mx
+    dy = int(y) - _my
+    if dx:
+        uinput_ev(EV_REL, REL_X, dx)
+    if dy:
+        uinput_ev(EV_REL, REL_Y, dy)
+    uinput_ev(EV_SYN, 0, 0)
+    _mx, _my = int(x), int(y)
+
+def uinput_click(down):
+    uinput_ev(EV_KEY, BTN_LEFT, 1 if down else 0)
+    uinput_ev(EV_SYN, 0, 0)
 
 def translate(cx, cy):
     px = int(cx * TAB_W / HU_W)
@@ -91,21 +159,19 @@ def handle_touch(fd, body):
     cx = fields.get(2, 0)
     cy = fields.get(3, 0)
     print('[%s] TOUCH action=%d HU(%d,%d)' % (time.strftime('%H:%M:%S'), action, cx, cy), flush=True)
-    # forward to the car-UI (carui) so the head-unit touch drives the UI,
-    # not the tablet screen
-    global carui_touch_fd
-    if carui_touch_fd is None:
-        try:
-            carui_touch_fd = open('/tmp/carui-touch', 'w')
-            print('carui-touch opened', flush=True)
-        except Exception as e:
-            print('carui-touch open fail: %s' % e, flush=True)
-    if carui_touch_fd:
-        try:
-            carui_touch_fd.write('%d %d %d\n' % (action, cx, cy))
-            carui_touch_fd.flush()
-        except Exception as e:
-            print('carui touch write fail: %s' % e, flush=True)
+    # Inject as a real relative mouse so the compositor's InputHandler
+    # (harbour-imira original) routes it through the Qt Quick scene.
+    try:
+        uinput_init()
+        uinput_move(cx, cy)
+        if action == 0:
+            uinput_click(True)
+        elif action == 1:
+            uinput_click(False)
+    except OSError as e:
+        print('uinput inject fail: %s' % e, flush=True)
+    except struct.error as e:
+        print('uinput struct fail: %s' % e, flush=True)
 
 def varint(n):
     out = bytearray()
@@ -416,6 +482,10 @@ vis_w, vis_h = 1920, 720
 video_thread = None
 video_stop = threading.Event()
 print('carlife_proto started, waiting...', flush=True)
+try:
+    uinput_init()   # create the synthetic mouse before imira-comp scans /dev/input
+except OSError as e:
+    print('uinput init fail: %s' % e, flush=True)
 g_fd = open_dev()
 sr = StreamReader(g_fd)
 print('connected', flush=True)
