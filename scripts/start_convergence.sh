@@ -4,6 +4,11 @@ pkill -f carlife-capture 2>/dev/null
 pkill -f imira-comp 2>/dev/null
 pkill -f 'carui/carui' 2>/dev/null
 sleep 0.5
+# Stale /tmp/imira-app-running (a previous app window that never closed)
+# makes carui think an app is still up and forward every tap to imira-comp,
+# so the launcher tiles become unresponsive. Reset it on every start.
+echo 0 > /tmp/imira-app-running
+chmod 666 /tmp/imira-app-running
 mkfifo /tmp/cast.h264 2>/dev/null
 chmod 666 /tmp/cast.h264
 mkfifo /tmp/carui-touch 2>/dev/null

@@ -96,6 +96,14 @@ static void launchApp(const QString &exec)
                             QStringList() << QStringLiteral("-c") << cmd);
 }
 
+static bool imiraHasApp()
+{
+    QFile f(QStringLiteral("/tmp/imira-app-running"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    return f.readAll().trimmed() == QStringLiteral("1");
+}
+
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
@@ -145,6 +153,19 @@ int main(int argc, char **argv)
                         line[pos] = 0;
                         int a, x, y;
                         if (sscanf(line, "%d %d %d", &a, &x, &y) == 3) {
+                            if (imiraHasApp()) {
+                                /* an app window is up: forward the tap to
+                                 * imira-comp which injects it into the app */
+                                FILE *tf = fopen("/tmp/imira-touch", "a");
+                                if (tf) {
+                                    fprintf(tf, "%d %d %d\n", a, x, y);
+                                    fclose(tf);
+                                }
+                                fprintf(stderr, "carui: fwd touch a=%d x=%d y=%d\n",
+                                        a, x, y);
+                                pos = 0;   /* reset line buffer before continue */
+                                continue;
+                            }
                             if (a == 1) {
                                 QQuickItem *content =
                                     qobject_cast<QQuickItem *>(win->contentItem());

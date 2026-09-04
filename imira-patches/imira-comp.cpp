@@ -895,16 +895,25 @@ public:
         QWaylandInputDevice *seat = defaultInputDevice();
         if (!seat)
             return;
-        if (action == 1 && !m_chromes.isEmpty() && y < 70 && x < 130) {
+        // Home/close: the chrome close (X) button sits in the top-right
+        // corner (width()-kTitle). Car taps there close the top window.
+        if (action == 1 && !m_chromes.isEmpty() &&
+            y < 70 && x > (int)m_width - 130) {
+            fprintf(stderr, "imira: close tap at %d,%d\n", x, y);
             closeWindow(m_chromes.last());
             return;
         }
         QPointF pos(x, y);
         WindowChrome *chrome = chromeAt(pos);
-        if (!chrome)
+        if (!chrome) {
+            fprintf(stderr, "imira: touch a=%d x=%d y=%d NO chrome\n",
+                    action, x, y);
             return;
+        }
         QWaylandSurfaceItem *item = chrome->surfaceItem();
         QPointF local = item->mapFromScene(pos);
+        fprintf(stderr, "imira: touch a=%d x=%d y=%d -> local %.0f,%.0f\n",
+                action, x, y, local.x(), local.y());
         seat->sendMouseMoveEvent(item, local, pos);
         if (action == 0) {
             raise(chrome);
@@ -1338,6 +1347,9 @@ int main(int argc, char *argv[])
     DockItem dock(window.contentItem(), width, height);
     dock.setCompositor(&compositor);
     compositor.setDock(&dock);
+    // Fresh start: never inherit a stale "an app is up" flag from a previous
+    // run (the head unit's launcher would forward taps to a dead app window).
+    compositor.setAppRunning(0);
     CursorItem cursor(window.contentItem());
     InputManager input(&compositor, &cursor, &dock, width, height,
                        [&]() {
