@@ -43,6 +43,7 @@
 #include <QOpenGLFunctions>
 #include <QPainter>
 #include <QQuickItem>
+#include <QPointer>
 #include <QQuickPaintedItem>
 #include <QQuickRenderControl>
 #include <QQuickWindow>
@@ -659,51 +660,56 @@ public:
             QWaylandSurfaceItem *item =
                 static_cast<QWaylandSurfaceItem *>(createView(qs));
             item->setTouchEventsEnabled(false);
-            // Fullscreen car-UI (our own driver UI): no window chrome, no
-            // dock — it IS the whole 1920x720 screen.
-            // car-UI (our launcher) is a normal window so the head-unit
-            // pointer (chromeAt) can hit it; a special fullscreen shortcut
-            // here would keep it out of m_chromes and every tap on it would
-            // be dropped before reaching the Qt Quick scene.
-            auto *chrome = new WindowChrome(m_window->contentItem(), item,
-                                            title.isEmpty()
-                                                ? QStringLiteral("App")
-                                                : title);
-            // Cascade new windows instead of stacking them dead center.
-            const int n = m_chromes.count();
-            chrome->setPosition(QPointF(48 + (n % 8) * 36,
-                                        24 + (n % 8) * 30));
-            m_chromes.append(chrome);
-            raise(chrome);
-            clampChrome(chrome);
-            if (m_dock)
-                m_dock->update();
-            QObject::connect(surface, &QWaylandSurface::sizeChanged,
-                             [this, chrome]() {
-                                 chrome->syncToSurface();
-                                 clampChrome(chrome);
-                             });
-            QObject::connect(surface,
-                             &QWaylandSurface::contentOrientationChanged,
-                             [chrome]() { chrome->syncToSurface(); });
-            QObject::connect(surface, &QWaylandSurface::titleChanged,
-                             [chrome, surface]() {
-                                 chrome->setTitle(surface->title());
-                             });
+            if (title.contains(QLatin1String("CarLife UI"))) {
+                // The CarLife shell (our launcher): fullscreen, no chrome,
+                // no dock — it owns the whole 1920x720 screen.
+                item->setParentItem(m_window->contentItem());
+                item->setPosition(QPointF(0, 0));
+                item->setSize(QSizeF(m_width, m_height));
+                item->setZ(0);
+                surface->requestSize(QSize(m_width, m_height));
+                if (m_dock)
+                    m_dock->setVisible(false);
+                m_shellItem = item;
+                QObject::connect(surface, &QWaylandSurface::unmapped,
+                                 [this]() { m_shellItem = nullptr; });
+                QObject::connect(surface, &QWaylandSurface::surfaceDestroyed,
+                                 [this]() { m_shellItem = nullptr; });
+                fprintf(stderr, "imira-comp: car-UI shell fullscreen %dx%d\n",
+                        m_width, m_height);
+                return;
+            }
+            // CarLife content window (a launched app): fills the area right
+            // of the shell's dock, no chrome. CarPlay-style, an app replaces
+            // the one on screen. No requestSize here — foreign apps (the QQ
+            // flatpak mirrors an Xvfb) crash when asked to resize; a surface
+            // of a different size is simply scaled into the item.
+            item->setParentItem(m_window->contentItem());
+            item->setPosition(QPointF(kDockW, 0));
+            item->setSize(QSizeF(m_width - kDockW, m_height));
+            item->setZ(m_nextContentZ++);
+            for (int i = 0; i < m_content.count(); ++i) {
+                if (m_content.at(i).visible) {
+                    m_content[i].visible = false;
+                    m_content[i].item->setVisible(false);
+                }
+            }
+            for (int i = m_content.count() - 1; i >= 0; --i) {
+                if (!m_content.at(i).visible && m_content.at(i).title == title)
+                    m_content.removeAt(i);   // stale hidden entry, same app
+            }
+            m_content.append(ContentWin{item, title, true});
             QObject::connect(surface, &QWaylandSurface::unmapped,
-                             [this, chrome]() { removeChrome(chrome); });
+                             [this, item]() { removeContent(item); });
             QObject::connect(surface, &QWaylandSurface::surfaceDestroyed,
-                             [this, chrome]() { removeChrome(chrome); });
+                             [this, item]() { removeContent(item); });
             // Belt and braces: whatever path tears the surface object down,
-            // the chrome must never outlive it.
+            // the entry must never outlive it.
             QObject::connect(surface, &QObject::destroyed,
-                             [this, chrome](QObject *) {
-                                 removeChrome(chrome);
-                             });
+                             [this, item](QObject *) { removeContent(item); });
             fprintf(stderr,
-                    "imira-comp: surface mapped %dx%d (%s) yInverted=%d\n",
-                    surface->size().width(), surface->size().height(),
-                    qPrintable(title), item->isYInverted());
+                    "imira-comp: carlife content '%s' %dx%d at x=%d\n",
+                    qPrintable(title), m_width - kDockW, m_height, kDockW);
         });
         // A desktop-sized window, not a phone screen: ask the client to lay
         // itself out for the workspace (output minus dock and title bar).
@@ -724,6 +730,82 @@ public:
                 return c;
         }
         return nullptr;
+    }
+
+    // --- CarLife shell/content management --------------------------------
+    // The shell ('CarLife UI') is fullscreen; launched apps are chromeless
+    // content windows to the right of carui's own dock (kDockW). Hit-test
+    // and command handling live here; see pointerEvent() and pollCarlifeCmd().
+    struct ContentWin {
+        QWaylandSurfaceItem *item;
+        QString title;
+        bool visible;
+    };
+
+    QWaylandSurfaceItem *contentItemAt(const QPointF &pos) const
+    {
+        for (int i = m_content.count() - 1; i >= 0; --i) {
+            const ContentWin &c = m_content.at(i);
+            if (!c.visible)
+                continue;
+            if (QRectF(c.item->position(), QSizeF(c.item->width(),
+                                                  c.item->height()))
+                    .contains(pos))
+                return c.item;
+        }
+        if (m_shellItem
+            && QRectF(m_shellItem->position(),
+                      QSizeF(m_shellItem->width(), m_shellItem->height()))
+                   .contains(pos))
+            return m_shellItem;
+        return nullptr;
+    }
+
+    void removeContent(QWaylandSurfaceItem *item)
+    {
+        for (int i = m_content.count() - 1; i >= 0; --i) {
+            if (m_content.at(i).item == item)
+                m_content.removeAt(i);
+        }
+    }
+
+    void pollCarlifeCmd()
+    {
+        QFile f(QStringLiteral("/tmp/imira-touch"));
+        if (!f.open(QIODevice::ReadOnly))
+            return;
+        const qint64 size = f.size();
+        if (size < m_cmdOff)
+            m_cmdOff = 0;   // file was truncated / recreated
+        if (size == m_cmdOff)
+            return;
+        f.seek(m_cmdOff);
+        const QByteArray data = f.readAll();
+        m_cmdOff += data.size();
+        const QList<QByteArray> lines = data.split('\n');
+        for (const QByteArray &line : lines) {
+            const QByteArray t = line.trimmed();
+            if (t == "H") {
+                // home: hide the app on screen
+                for (int i = m_content.count() - 1; i >= 0; --i) {
+                    if (m_content.at(i).visible) {
+                        m_content[i].visible = false;
+                        m_content[i].item->setVisible(false);
+                        break;
+                    }
+                }
+            } else if (t == "S") {
+                // dock re-selected the hidden app: bring it back on top
+                for (int i = m_content.count() - 1; i >= 0; --i) {
+                    if (!m_content.at(i).visible) {
+                        m_content[i].visible = true;
+                        m_content[i].item->setVisible(true);
+                        m_content[i].item->setZ(m_nextContentZ++);
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     void setDock(DockItem *dock) { m_dock = dock; }
@@ -886,6 +968,13 @@ private:
     int m_zCounter = 0;
     QVector<WindowChrome *> m_chromes;
     DockItem *m_dock = nullptr;
+
+    // CarLife shell/content state (see contentItemAt / pollCarlifeCmd)
+    static const int kDockW = 140;   // carui's own dock width on the left
+    QWaylandSurfaceItem *m_shellItem = nullptr;
+    QVector<ContentWin> m_content;
+    int m_nextContentZ = 10;
+    qint64 m_cmdOff = 0;
 };
 
 // Task-bar half of the dock (needs the full Compositor type).
@@ -931,6 +1020,13 @@ public:
         auto *t = new QTimer(this);
         connect(t, &QTimer::timeout, this, [this]() { scan(); });
         t->start(3000);
+        // carui drives shell<->app switching through command lines appended
+        // to /tmp/imira-touch ("H" hide current app -> home, "S" show the
+        // hidden one again). Poll on the main thread, where the items live.
+        auto *cmd = new QTimer(this);
+        connect(cmd, &QTimer::timeout, this,
+                [this]() { m_comp->pollCarlifeCmd(); });
+        cmd->start(120);
     }
 
 private:
@@ -1036,12 +1132,22 @@ private:
     void pointerEvent(const input_event &ev)
     {
         QWaylandInputDevice *seat = m_comp->defaultInputDevice();
-        if (ev.type == EV_REL && ev.code == REL_X) {
-            m_pos.setX(qBound(0.0, m_pos.x() + ev.value, (double)m_w - 1));
-        } else if (ev.type == EV_REL && ev.code == REL_Y) {
-            m_pos.setY(qBound(0.0, m_pos.y() + ev.value, (double)m_h - 1));
-        } else if (ev.type == EV_REL && ev.code == REL_WHEEL) {
+        if (ev.type == EV_REL && ev.code == REL_WHEEL) {
             seat->sendMouseWheelEvent(Qt::Vertical, ev.value * 15);
+            return;
+        } else if (ev.type == EV_REL
+                   && (ev.code == REL_X || ev.code == REL_Y)) {
+            if (ev.code == REL_X)
+                m_pos.setX(qBound(0.0, m_pos.x() + ev.value, (double)m_w - 1));
+            else
+                m_pos.setY(qBound(0.0, m_pos.y() + ev.value, (double)m_h - 1));
+            // A pressed content window follows the pointer (Flickable
+            // scrolling in apps needs press-move-release).
+            if (m_contentPressed) {
+                seat->sendMouseMoveEvent(m_contentPressed,
+                                         m_contentPressed->mapFromScene(m_pos),
+                                         m_pos);
+            }
             return;
         } else if (ev.type == EV_KEY
                    && (ev.code == BTN_LEFT || ev.code == BTN_RIGHT
@@ -1054,49 +1160,25 @@ private:
                 m_resize = nullptr; // …or of a resize
                 return;
             }
+            if (b == Qt::LeftButton && !ev.value && m_contentPressed) {
+                const QPointF local = m_contentPressed->mapFromScene(m_pos);
+                seat->sendMouseMoveEvent(m_contentPressed, local, m_pos);
+                seat->sendMouseReleaseEvent(b, local, m_pos);
+                m_contentPressed = nullptr;
+                return;
+            }
             // The dock swallows its clicks before any window sees them.
-            if (b == Qt::LeftButton && ev.value
+            if (b == Qt::LeftButton && ev.value && m_dock
+                    && m_dock->isVisible()
                     && m_pos.y() >= m_dock->position().y()) {
                 m_dock->handleClick(m_pos);
                 return;
             }
-            WindowChrome *chrome = m_comp->chromeAt(m_pos);
-            if (!chrome)
+            // CarLife shell and content windows carry no chrome; route by
+            // hit-testing the registered items directly.
+            QWaylandSurfaceItem *item = m_comp->contentItemAt(m_pos);
+            if (!item)
                 return;
-            const QPointF inChrome = m_pos - chrome->position();
-            const int edges = chrome->resizeEdgesAt(inChrome);
-            if (b == Qt::LeftButton && ev.value && edges) {
-                m_comp->raise(chrome);
-                m_resize = chrome;
-                m_resizeEdges = edges;
-                m_resizeStart = m_pos;
-                m_resizeGeo = QRectF(chrome->position(),
-                                     QSizeF(chrome->width(),
-                                            chrome->height()));
-                chrome->maximized = false;
-                return;
-            }
-            if (b == Qt::LeftButton && ev.value
-                    && chrome->inTitle(inChrome)) {
-                m_comp->raise(chrome);
-                if (chrome->inClose(inChrome))
-                    m_comp->closeWindow(chrome);
-                else if (chrome->inMaximize(inChrome))
-                    m_comp->toggleMaximize(chrome);
-                else if (chrome->inMinimize(inChrome))
-                    m_comp->minimizeWindow(chrome);
-                else if (chrome->inRotate(inChrome))
-                    chrome->cycleRotation();
-                else if (chrome->inZoom(inChrome))
-                    chrome->toggleZoom();
-                else {          // grab the title bar: start moving
-                    m_drag = chrome;
-                    m_dragOffset = inChrome;
-                }
-                return;
-            }
-            // Click into the window content.
-            QWaylandSurfaceItem *item = chrome->surfaceItem();
             const QPointF local = item->mapFromScene(m_pos);
             seat->sendMouseMoveEvent(item, local, m_pos);
             QWaylandSurfaceView *mf = seat->mouseFocus();
@@ -1107,8 +1189,9 @@ private:
                     qPrintable(item->surface()->title()), local.x(),
                     local.y(), (void *)mf);
             if (ev.value) {
-                m_comp->raise(chrome);
                 seat->sendMousePressEvent(b, local, m_pos);
+                if (b == Qt::LeftButton)
+                    m_contentPressed = item;
             } else {
                 seat->sendMouseReleaseEvent(b, local, m_pos);
             }
@@ -1196,6 +1279,9 @@ private:
     int m_resizeEdges = 0;
     QPointF m_resizeStart;
     QRectF m_resizeGeo;
+    // QPointer: a crashing app can destroy the surface mid-press — a raw
+    // pointer here would dangle and take down all further input handling.
+    QPointer<QWaylandSurfaceItem> m_contentPressed;   // CarLife content drag
     struct OpenDevice {
         int fd;
         QSocketNotifier *notifier;
