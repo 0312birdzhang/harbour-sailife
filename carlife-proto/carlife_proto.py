@@ -393,10 +393,16 @@ def enter_accessory_mode():
     return True
 
 def wait_configured(timeout):
+    """Wait for the UDC to be configured — and to STAY configured: the
+    state flaps while the head unit is still settling the enumeration, and
+    opening during the flap costs one extra drop."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if udc_state() == 'configured':
-            return True
+            time.sleep(1)
+            if udc_state() == 'configured':
+                return True
+            continue
         time.sleep(0.5)
     return udc_state() == 'configured'
 
@@ -406,19 +412,30 @@ g_connected = False     # accessory fd open and believed alive
 g_last_attempt = 0.0    # when acquire_link last ran
 g_last_open = 0.0       # when the currently-used fd was opened
 g_recover_level = 0     # 0 plain reopen, 1 rebind UDC, 2 full AOA handshake
+g_hu_seen = False       # the HU sent something since the fd opened
+g_link_open_ts = 0.0    # for the no-session nudge timer
+g_nudged = False        # already rebind-nudged during this silent stretch
+g_nudge_ts = 0.0        # when the watchdog last rebind-nudged
 
-def acquire_link():
+def acquire_link(force_level=None):
     """Open the accessory device, recovering the USB link as needed.
 
     Escalation: a session that dies (or fails to come up) within 30s means
     the USB state is stale — go from plain reopen to UDC rebind to the full
     AOA handshake, and stay escalated until a stable (>30s) session.
+    force_level raises the level for one call (the no-session nudge).
     Returns an open fd or None."""
     global g_connected, g_stream_on, g_last_attempt, g_last_open, g_recover_level
+    global g_hu_seen, g_link_open_ts
     g_connected = False
     g_stream_on = False
-    if g_last_attempt and time.time() - g_last_attempt < 30:
-        g_recover_level = min(g_recover_level + 1, 2)
+    if force_level is not None:
+        g_recover_level = max(g_recover_level, force_level)
+    elif g_last_attempt and time.time() - g_last_attempt < 30:
+        if time.time() - g_nudge_ts > 5:
+            # the watchdog's nudge rebind already re-enumerated; recovering
+            # from it needs only a reopen, a second rebind just adds churn
+            g_recover_level = min(g_recover_level + 1, 2)
     elif g_last_open and time.time() - g_last_open > 30:
         g_recover_level = 0   # last session was stable, try the cheap path
     g_last_attempt = time.time()
@@ -442,6 +459,8 @@ def acquire_link():
         time.sleep(1)
         return None
     g_last_open = time.time()
+    g_link_open_ts = g_last_open
+    g_hu_seen = False
     g_connected = True
     print('[%s] accessory fd=%d open' % (ts(), fd), flush=True)
     return fd
@@ -642,6 +661,26 @@ while g_fd is None:
 sr = StreamReader(g_fd)
 print('connected', flush=True)
 
+def nudge_watchdog(stop):
+    """If the HU never opens its session after we open the device (e.g. the
+    old daemon was killed mid-stream and the HU does not retry on an
+    already-enumerated device), one UDC rebind forces re-enumeration, which
+    the HU answers immediately. Only nudges; the main loop owns the fd."""
+    global g_nudged, g_nudge_ts
+    while not stop.is_set():
+        time.sleep(1)
+        if g_connected and not g_hu_seen and not g_nudged \
+                and time.time() - g_link_open_ts > 20:
+            g_nudged = True
+            g_nudge_ts = time.time()
+            print('[%s] no HU session for 20s, nudging with UDC rebind' % ts(), flush=True)
+            rebind_udc()
+            # the open fd dies with the unbind; the main loop's read fails
+            # and runs its normal recovery path
+
+nudge_stop = threading.Event()
+threading.Thread(target=nudge_watchdog, args=(nudge_stop,), daemon=True).start()
+
 while True:
     try:
         frame = sr.read_frame()
@@ -662,6 +701,8 @@ while True:
     if frame is None:
         continue
     msg_type, body = frame
+    g_hu_seen = True
+    g_nudged = False
     if msg_type == CMD:
         service, payload = parse_cmd(body)
         print('[%s] CMD 0x%08X len=%d raw=%s' % (time.strftime('%H:%M:%S'), service, len(payload), body[:32].hex()), flush=True)

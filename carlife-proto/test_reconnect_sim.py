@@ -152,4 +152,12 @@ assert sysfs.pid == '0x2d00' and fd == 42, (sysfs.pid, fd)
 assert sysfs.events.count('unbind') == 1, sysfs.events   # single flip, no restore
 print('H ok: L0 AOA with START -> switched to 0x2d00, opened')
 
+# I: no-session nudge — force_level=1 triggers a rebind even though the
+#    last attempt is old enough that normal escalation would pick level 0
+Clock.t += 100; sysfs.events.clear()
+fd = acquire(force_level=1)
+assert g['g_recover_level'] == 1 and 'unbind' in sysfs.events and fd == 42, \
+    (g['g_recover_level'], sysfs.events, fd)
+print('I ok: nudge (force_level=1) -> UDC rebind, reopened')
+
 print('ALL SCENARIOS PASS')
