@@ -328,6 +328,7 @@ class CarUiController : public QObject
     Q_PROPERTY(QVariantList tiles READ tiles NOTIFY tilesChanged)
     Q_PROPERTY(QVariantList rows READ rows NOTIFY rowsChanged)
     Q_PROPERTY(QVariantList dockApps READ dockApps NOTIFY dockChanged)
+    Q_PROPERTY(QString currentApp READ currentApp NOTIFY currentAppChanged)
 
 public:
     explicit CarUiController(QObject *parent = nullptr) : QObject(parent) {}
@@ -365,6 +366,9 @@ public:
 
     // current editor state: [{category, appId, appName}, …]
     QVariantList rows() const { return m_rows; }
+
+    // appId of the app currently on screen ("" = home grid visible)
+    QString currentApp() const { return m_currentApp; }
 
     Q_INVOKABLE void reloadConfig()
     {
@@ -458,7 +462,7 @@ public:
         if (index < 0 || index >= g_apps.size())
             return;
         const AppInfo &a = g_apps[index];
-        launch(a.appId, a.exec, a.name);
+        activate(a.appId, a.exec, a.name);
     }
 
     Q_INVOKABLE void dockClicked(const QString &appId)
@@ -466,20 +470,23 @@ public:
         const AvailableApp *a = findAvailable(appId);
         if (!a)
             return;
-        if (appId == m_hiddenApp) {
-            // the app is still running, just hidden: bring it back
+        activate(appId, a->exec, a->name);
+    }
+
+    // gear: hide whatever is on screen, then open the settings overlay
+    Q_INVOKABLE void openSettings()
+    {
+        if (!m_currentApp.isEmpty()) {
             FILE *tf = fopen("/tmp/imira-touch", "a");
             if (tf) {
-                fprintf(tf, "S\n");
+                fprintf(tf, "H\n");
                 fclose(tf);
             }
-            m_currentApp = appId;
-            m_hiddenApp.clear();
-            fprintf(stderr, "carui: showing %s\n",
-                    a->name.toUtf8().constData());
-            return;
+            m_hiddenApp = m_currentApp;
+            m_currentApp.clear();
+            emit currentAppChanged();
         }
-        launch(appId, a->exec, a->name);
+        reloadConfig();
     }
 
     Q_INVOKABLE void homeClicked()
@@ -495,26 +502,49 @@ public:
         m_currentApp.clear();
         fprintf(stderr, "carui: home (hid %s)\n",
                 m_hiddenApp.toUtf8().constData());
+        emit currentAppChanged();
     }
 
 signals:
     void tilesChanged();
     void rowsChanged();
     void dockChanged();
+    void currentAppChanged();
 
 private:
     QVariantList m_rows;
     QString m_currentApp;
     QString m_hiddenApp;
 
-    void launch(const QString &appId, const QString &exec, const QString &name)
+    // CarPlay semantics: the tapped app replaces whatever is on screen; a
+    // hidden app comes back instead of being launched twice (native apps
+    // launched as bare binaries have no single-instance guard).
+    void activate(const QString &appId, const QString &exec,
+                  const QString &name)
     {
+        if (appId == m_currentApp)
+            return;   // already on screen
+        if (appId == m_hiddenApp) {
+            // still running, just hidden: bring it back
+            FILE *tf = fopen("/tmp/imira-touch", "a");
+            if (tf) {
+                fprintf(tf, "S\n");
+                fclose(tf);
+            }
+            m_currentApp = appId;
+            m_hiddenApp.clear();
+            fprintf(stderr, "carui: showing %s\n",
+                    name.toUtf8().constData());
+            emit currentAppChanged();
+            return;
+        }
         fprintf(stderr, "carui: launching %s\n", name.toUtf8().constData());
         launchApp(exec);
         moveToFront(appId);
         m_hiddenApp = m_currentApp;   // an app replaces the one on screen
         m_currentApp = appId;
         emit dockChanged();
+        emit currentAppChanged();
     }
 };
 

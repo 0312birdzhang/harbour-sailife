@@ -127,7 +127,7 @@ Window {
                 id: gearMA
                 anchors.fill: parent
                 onClicked: {
-                    carController.reloadConfig()
+                    carController.openSettings()
                     root.settingsOpen = true
                 }
             }
@@ -135,8 +135,11 @@ Window {
     }
 
     // ---------- content area: home grid ----------
+    // hidden while an app is on screen: the app surface may not fill its
+    // item exactly, and the grid must never show through behind it
     Grid {
         id: grid
+        visible: carController.currentApp === ""
         x: 140
         width: parent.width - 140
         anchors.verticalCenter: parent.verticalCenter

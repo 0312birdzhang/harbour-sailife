@@ -681,13 +681,14 @@ public:
             }
             // CarLife content window (a launched app): fills the area right
             // of the shell's dock, no chrome. CarPlay-style, an app replaces
-            // the one on screen. No requestSize here — foreign apps (the QQ
-            // flatpak mirrors an Xvfb) crash when asked to resize; a surface
-            // of a different size is simply scaled into the item.
+            // the one on screen. Native apps honour the resize request and
+            // fill the content area; the QQ flatpak crashes on any resize
+            // (broken on its own) and just gets scaled into the item.
             item->setParentItem(m_window->contentItem());
             item->setPosition(QPointF(kDockW, 0));
             item->setSize(QSizeF(m_width - kDockW, m_height));
             item->setZ(m_nextContentZ++);
+            surface->requestSize(QSize(m_width - kDockW, m_height));
             for (int i = 0; i < m_content.count(); ++i) {
                 if (m_content.at(i).visible) {
                     m_content[i].visible = false;
