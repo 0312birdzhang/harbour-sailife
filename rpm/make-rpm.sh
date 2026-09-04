@@ -34,5 +34,6 @@ rpmbuild -ta --target aarch64 \
     --define "__os_install_post %{nil}" \
     "$NAME-$VERSION.tar.bz2"
 
-RPM=$(ls "$HOME/rpmbuild/RPMS/aarch64/$NAME-$VERSION-*.aarch64.rpm" | tail -1)
-echo "RPM_OK $RPM"
+# deterministic name (a plain glob under sb2 mysteriously misses the file)
+RPM="$HOME/rpmbuild/RPMS/aarch64/$NAME-$VERSION-1.aarch64.rpm"
+test -f "$RPM" && echo "RPM_OK $RPM"

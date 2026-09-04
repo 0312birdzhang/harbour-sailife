@@ -10,5 +10,5 @@ wsl.exe -u root -e bash -c "cd $SDK &&
     ./sdk-chroot -u pc sb2 -t SailfishOS-latest-aarch64 bash $REPO/rpm/build-arm.sh &&
     ./sdk-chroot -u pc sb2 -t SailfishOS-latest-aarch64 bash $REPO/rpm/make-rpm.sh"
 
-# copy the fresh RPM out to the workspace (WSL side; outside the SDK sandbox)
-cp -v /home/pc/rpmbuild/RPMS/aarch64/harbour-sailife-*.aarch64.rpm /mnt/d/code/sfos-carlife/
+# copy the fresh RPM out to the workspace (runs inside WSL: /home/pc and /mnt/d)
+wsl.exe -e bash -c "cp -v /home/pc/rpmbuild/RPMS/aarch64/harbour-sailife-*.aarch64.rpm /mnt/d/code/sfos-carlife/"

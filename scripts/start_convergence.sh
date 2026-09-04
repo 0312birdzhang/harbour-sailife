@@ -19,8 +19,10 @@ nohup python3 /opt/carlife/carlife_proto.py > /opt/carlife/proto.log 2>&1 < /dev
 sleep 1
 # At boot systemd may run us before lipstick is up; the compositor needs
 # its Wayland display, so wait for the socket (max 30s) and carry on.
+# NOTE: WAYLAND_DISPLAY=../../display/wayland-0 normalises to /run/display —
+# lipstick's socket lives there, NOT under /run/user/100000.
 n=0
-while [ ! -S /run/user/100000/display/wayland-0 ] && [ $n -lt 60 ]; do
+while [ ! -S /run/display/wayland-0 ] && [ $n -lt 60 ]; do
     sleep 0.5
     n=$((n+1))
 done
