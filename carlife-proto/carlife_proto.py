@@ -1,8 +1,18 @@
-import os, struct, time, sys, select, threading, subprocess, fcntl, ctypes
+import os, struct, time, sys, select, threading, subprocess, fcntl, ctypes, socket
 
 DEV = '/dev/usb/usb_accessory'
 FIFO = '/tmp/cast.h264'
 TOUCHD = '/opt/carlife/touchd'
+
+# USB gadget (AOA) control. When the head unit drops the session after a
+# timeout (e.g. heavy app slows the video), the accessory misc device is
+# often left dead: writes fail with ENODEV ("No such device") and only a
+# fresh USB enumeration clears the stale state. We therefore recover by
+# re-binding the UDC, worst case redoing the whole AOA handshake.
+GADGET = '/sys/kernel/config/usb_gadget/g1'
+UDC_NAME = 'a600000.dwc3'
+PID_DEFAULT = '0x4ee1'      # pre-AOA PID; the HU sends 0x51/0x52/0x53 to this
+PID_ACCESSORY = '0x2d00'    # AOA data mode
 
 # tablet screen (px)
 TAB_W = 1600
@@ -249,11 +259,12 @@ def export_video(service, payload):
 def send_frame(fd, msg_type, msg):
     head = bytes(3) + bytes([msg_type]) + int2b(len(msg))
     try:
-        n1 = os.write(fd, head)
-        n2 = os.write(fd, msg)
-        print('  [TX type=%d len=%d wrote=%d+%d]' % (msg_type, len(msg), n1, n2), flush=True)
+        os.write(fd, head)
+        os.write(fd, msg)
+        if msg_type != VIDEO:   # video is 30fps: logging every frame floods the log
+            print('  [TX type=%d len=%d]' % (msg_type, len(msg)), flush=True)
     except OSError as e:
-        print('  [TX FAIL %s]' % e, flush=True)
+        print('  [TX FAIL type=%d %s]' % (msg_type, e), flush=True)
 
 class StreamReader:
     def __init__(self, fd):
@@ -300,13 +311,135 @@ def parse_cmd(body):
     payload = body[8:8 + carmsg_len] if carmsg_len > 0 else b''
     return service, payload
 
-def open_dev():
-    while True:
-        try:
-            return os.open(DEV, os.O_RDWR)
-        except OSError as e:
-            print('open fail (%s), retry in 2s' % e, flush=True)
-            time.sleep(2)
+def ts():
+    return time.strftime('%H:%M:%S')
+
+def udc_state():
+    try:
+        with open('/sys/class/udc/%s/state' % UDC_NAME) as f:
+            return f.read().strip()
+    except OSError:
+        return 'unknown'
+
+def gadget_pid():
+    try:
+        with open(GADGET + '/idProduct') as f:
+            return f.read().strip()
+    except OSError:
+        return 'unknown'
+
+def write_sys(path, val):
+    try:
+        with open(path, 'w') as f:
+            f.write(val)
+        return True
+    except OSError as e:
+        print('write %s fail: %s' % (path, e), flush=True)
+        return False
+
+def set_pid_and_bind(pid):
+    """configfs attributes only accept writes while the UDC is unbound."""
+    write_sys(GADGET + '/UDC', '\n')
+    time.sleep(0.2)
+    write_sys(GADGET + '/idProduct', pid)
+    time.sleep(0.2)
+    write_sys(GADGET + '/UDC', UDC_NAME + '\n')
+    time.sleep(0.5)
+
+def rebind_udc():
+    """Unbind + rebind the UDC: forces a clean re-enumeration. The gadget
+    keeps its accessory PID, so a head unit that already knows the device
+    re-claims it without the full AOA dance."""
+    print('[%s] UDC rebind (forced re-enumeration)' % ts(), flush=True)
+    write_sys(GADGET + '/UDC', '\n')
+    time.sleep(0.5)
+    write_sys(GADGET + '/UDC', UDC_NAME + '\n')
+    time.sleep(1.0)
+
+def _netlink_uevent_socket():
+    try:
+        s = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 15)  # KOBJECT_UEVENT
+        s.bind((0, 1))
+        return s
+    except OSError as e:
+        print('netlink bind fail: %s' % e, flush=True)
+        return None
+
+def enter_accessory_mode():
+    """Full AOA dance: default PID, wait for the HU to send the accessory
+    start requests (kernel then broadcasts ACCESSORY=START), switch to the
+    accessory PID — same sequence as aoa_manager.py. Bind the uevent socket
+    BEFORE switching PID so the START event cannot slip through."""
+    print('[%s] AOA handshake: PID -> %s, waiting for ACCESSORY=START' % (ts(), PID_DEFAULT), flush=True)
+    s = _netlink_uevent_socket()
+    if gadget_pid() != PID_DEFAULT:
+        set_pid_and_bind(PID_DEFAULT)
+    ok = False
+    deadline = time.time() + 30
+    while s and time.time() < deadline:
+        r, _, _ = select.select([s], [], [], 1)
+        if r and b'ACCESSORY=START' in s.recv(65536):
+            ok = True
+            break
+    if s:
+        s.close()
+    if not ok:
+        print('[%s] AOA handshake: no START within 30s' % ts(), flush=True)
+        if gadget_pid() != PID_ACCESSORY:
+            set_pid_and_bind(PID_ACCESSORY)   # restore for the next attempt
+        return False
+    print('[%s] AOA handshake: START received, PID -> %s' % (ts(), PID_ACCESSORY), flush=True)
+    set_pid_and_bind(PID_ACCESSORY)
+    return True
+
+def wait_configured(timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if udc_state() == 'configured':
+            return True
+        time.sleep(0.5)
+    return udc_state() == 'configured'
+
+g_need_idr = False
+g_stream_on = False     # HU handshake finished (VIDEO_ENCODER_START seen)
+g_connected = False     # accessory fd open and believed alive
+g_last_attempt = 0.0    # when acquire_link last ran
+g_last_open = 0.0       # when the currently-used fd was opened
+g_recover_level = 0     # 0 plain reopen, 1 rebind UDC, 2 full AOA handshake
+
+def acquire_link():
+    """Open the accessory device, recovering the USB link as needed.
+
+    Escalation: a session that dies (or fails to come up) within 30s means
+    the USB state is stale — go from plain reopen to UDC rebind to the full
+    AOA handshake, and stay escalated until a stable (>30s) session.
+    Returns an open fd or None."""
+    global g_connected, g_stream_on, g_last_attempt, g_last_open, g_recover_level
+    g_connected = False
+    g_stream_on = False
+    if g_last_attempt and time.time() - g_last_attempt < 30:
+        g_recover_level = min(g_recover_level + 1, 2)
+    elif g_last_open and time.time() - g_last_open > 30:
+        g_recover_level = 0   # last session was stable, try the cheap path
+    g_last_attempt = time.time()
+    print('[%s] acquire_link level=%d (UDC %s, PID %s)' % (ts(), g_recover_level, udc_state(), gadget_pid()), flush=True)
+    if g_recover_level == 2:
+        enter_accessory_mode()
+    elif g_recover_level == 1:
+        rebind_udc()
+    if not wait_configured(20):
+        print('[%s] UDC not configured, retrying later' % ts(), flush=True)
+        return None
+    try:
+        fd = os.open(DEV, os.O_RDWR)
+    except OSError as e:
+        print('[%s] open fail: %s' % (ts(), e), flush=True)
+        time.sleep(1)
+        return None
+    g_last_open = time.time()
+    g_connected = True
+    print('[%s] accessory fd=%d open' % (ts(), fd), flush=True)
+    return fd
 
 def find_sc(b, s):
     """Return the earliest start code (3- or 4-byte) at/after s.
@@ -408,8 +541,6 @@ def frame_has_idr(au):
         pos = i + sc
     return False
 
-g_need_idr = False
-
 def video_loop_fifo(stop):
     global g_fd, g_need_idr
     src = os.environ.get('CARLIFE_VIDEO_FILE', '')
@@ -434,6 +565,9 @@ def video_loop_fifo(stop):
         print('test file: %d frames' % len(frames), flush=True)
         i = 0
         while not stop.is_set():
+            if not g_stream_on or not g_connected:
+                time.sleep(0.05)
+                continue
             send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, frames[i % len(frames)]))
             i += 1
             time.sleep(0.033)
@@ -450,6 +584,16 @@ def video_loop_fifo(stop):
         if g_need_idr:
             waiting_idr = True
             g_need_idr = False
+        if not g_stream_on or not g_connected:
+            # Link down or the HU handshake has not finished yet: drain the
+            # FIFO so we never queue up stale frames, and send nothing.
+            try:
+                fifo.read(65536)
+            except OSError:
+                time.sleep(0.2)
+            buf = b''
+            time.sleep(0.05)
+            continue
         try:
             d = fifo.read(65536)
         except OSError:
@@ -486,23 +630,29 @@ try:
     uinput_init()   # create the synthetic mouse before imira-comp scans /dev/input
 except OSError as e:
     print('uinput init fail: %s' % e, flush=True)
-g_fd = open_dev()
+g_fd = acquire_link()
+while g_fd is None:
+    time.sleep(2)
+    g_fd = acquire_link()
 sr = StreamReader(g_fd)
 print('connected', flush=True)
 
 while True:
     try:
         frame = sr.read_frame()
-    except (OSError, EOFError):
-        print('[%s] lost connection, reopening...' % time.strftime('%H:%M:%S'), flush=True)
+    except (OSError, EOFError) as e:
+        print('[%s] link lost (%s), recovering...' % (ts(), e), flush=True)
+        g_connected = False   # stop the video thread before the fd dies
         try:
             os.close(g_fd)
         except OSError:
             pass
-        time.sleep(1)
-        g_fd = open_dev()
+        g_fd = acquire_link()
+        while g_fd is None:
+            time.sleep(2)
+            g_fd = acquire_link()
         sr = StreamReader(g_fd)
-        print('reconnected', flush=True)
+        print('[%s] link back, waiting for HU handshake' % ts(), flush=True)
         continue
     if frame is None:
         continue
@@ -543,6 +693,7 @@ while True:
             send_frame(g_fd, MEDIA, export_video(MSG_MEDIA_INIT, msg_music_init()))
             print('  -> MEDIA_INIT', flush=True)
             g_need_idr = True
+            g_stream_on = True
             if not video_thread or not video_thread.is_alive():
                 video_stop.clear()
                 video_thread = threading.Thread(target=video_loop_fifo, args=(video_stop,), daemon=True)
