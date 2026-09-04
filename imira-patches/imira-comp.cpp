@@ -675,6 +675,7 @@ public:
                                             title.isEmpty()
                                                 ? QStringLiteral("App")
                                                 : title);
+            setAppRunning(1);
             // Cascade new windows instead of stacking them dead center.
             const int n = m_chromes.count();
             chrome->setPosition(QPointF(48 + (n % 8) * 36,
@@ -871,6 +872,8 @@ public:
     {
         if (!m_chromes.removeAll(chrome))
             return;
+        if (m_chromes.isEmpty())
+            setAppRunning(0);
         fprintf(stderr, "imira-comp: window gone (%d left)\n",
                 m_chromes.count());
         // Out of the scene NOW — the deferred delete alone left a ghost
@@ -882,6 +885,44 @@ public:
             raise(m_chromes.last());
         if (m_dock)
             m_dock->update();
+    }
+
+    // Head-unit touch from the car (action 0=down 1=up 2=move, x/y in the
+    // 1920x720 output). Routed to the top app window; a tap in the top-left
+    // "home" strip closes the top window (back to the launcher).
+    void injectCarTouch(int action, int x, int y)
+    {
+        QWaylandInputDevice *seat = defaultInputDevice();
+        if (!seat)
+            return;
+        if (action == 1 && !m_chromes.isEmpty() && y < 70 && x < 130) {
+            closeWindow(m_chromes.last());
+            return;
+        }
+        QPointF pos(x, y);
+        WindowChrome *chrome = chromeAt(pos);
+        if (!chrome)
+            return;
+        QWaylandSurfaceItem *item = chrome->surfaceItem();
+        QPointF local = item->mapFromScene(pos);
+        seat->sendMouseMoveEvent(item, local, pos);
+        if (action == 0) {
+            raise(chrome);
+            seat->sendMousePressEvent(Qt::LeftButton, local, pos);
+        } else if (action == 1) {
+            seat->sendMouseReleaseEvent(Qt::LeftButton, local, pos);
+        }
+    }
+
+    // Tells carui whether an app window is up (0/1 in /tmp/imira-app-running),
+    // so the launcher only claims taps while it is the top window.
+    void setAppRunning(int n)
+    {
+        FILE *f = fopen("/tmp/imira-app-running", "w");
+        if (f) {
+            fprintf(f, "%d\n", n);
+            fclose(f);
+        }
     }
 
 private:
@@ -1352,6 +1393,26 @@ int main(int argc, char *argv[])
     // reader latching onto it would stream one frozen frame forever.
     signal(SIGTERM, [](int) { QCoreApplication::quit(); });
     signal(SIGINT, [](int) { QCoreApplication::quit(); });
+
+    // Head-unit touch: carui forwards taps (when an app window is up) to
+    // /tmp/imira-touch; we route them into the compositor.
+    auto *touchTimer = new QTimer(&app);
+    QObject::connect(touchTimer, &QTimer::timeout, [&compositor]() {
+        FILE *f = fopen("/tmp/imira-touch", "r");
+        if (f) {
+            char line[64];
+            while (fgets(line, sizeof(line), f)) {
+                int action, x, y;
+                if (sscanf(line, "%d %d %d", &action, &x, &y) == 3)
+                    compositor.injectCarTouch(action, x, y);
+            }
+            fclose(f);
+            FILE *w = fopen("/tmp/imira-touch", "w");
+            if (w)
+                fclose(w);
+        }
+    });
+    touchTimer->start(20);
 
     fprintf(stderr, "imira-comp: %dx%d@%d on wayland socket imira-comp-0\n",
             width, height, fps);

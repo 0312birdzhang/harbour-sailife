@@ -317,8 +317,29 @@ def extract_au(buf):
     au = buf[positions[0][0]:frame_end]
     return au, buf[frame_end:]
 
+def frame_has_idr(au):
+    """True if this access unit begins with an IDR slice (type 5)."""
+    pos = 0
+    while True:
+        i = au.find(b'\x00\x00\x00\x01', pos)
+        if i == -1:
+            i = au.find(b'\x00\x00\x01', pos)
+            if i == -1:
+                break
+            sc = 3
+        else:
+            sc = 4
+        if i + sc < len(au):
+            t = au[i + sc] & 0x1f
+            if t in (1, 5):
+                return t == 5
+        pos = i + sc
+    return False
+
+g_need_idr = False
+
 def video_loop_fifo(stop):
-    global g_fd
+    global g_fd, g_need_idr
     src = os.environ.get('CARLIFE_VIDEO_FILE', '')
     if src:
         try:
@@ -352,7 +373,11 @@ def video_loop_fifo(stop):
         return
     print('video FIFO source: %s' % FIFO, flush=True)
     buf = b''
+    waiting_idr = True
     while not stop.is_set():
+        if g_need_idr:
+            waiting_idr = True
+            g_need_idr = False
         try:
             d = fifo.read(65536)
         except OSError:
@@ -373,6 +398,11 @@ def video_loop_fifo(stop):
             au, buf = extract_au(buf)
             if au is None:
                 break
+            # The head unit only starts decoding at an IDR (type 5). Drop
+            # everything until we see one; the encoder emits one every ~0.5s.
+            if waiting_idr and not frame_has_idr(au):
+                continue
+            waiting_idr = False
             send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, au))
     fifo.close()
 
@@ -436,6 +466,7 @@ while True:
         elif service == MSG_CMD_VIDEO_ENCODER_START:
             send_frame(g_fd, MEDIA, export_video(MSG_MEDIA_INIT, msg_music_init()))
             print('  -> MEDIA_INIT', flush=True)
+            g_need_idr = True
             if not video_thread or not video_thread.is_alive():
                 video_stop.clear()
                 video_thread = threading.Thread(target=video_loop_fifo, args=(video_stop,), daemon=True)

@@ -28,14 +28,21 @@ bool X264Encoder::init(int width, int height, int fps, int bitrate,
     param.i_csp = X264_CSP_I420;
     param.rc.i_rc_method = X264_RC_ABR;
     param.rc.i_bitrate = bitrate / 1000;
-    param.i_keyint_max = fps * 2;
-    param.i_keyint_min = fps;
+    param.i_keyint_max = fps / 2;  /* 0.5s GOP: fast resync */
+    param.i_keyint_min = 1;
+    param.b_open_gop = 0;           /* closed GOP: IDR frames */
     param.b_repeat_headers = 1;   /* SPS/PPS in stream (Annex-B) */
     param.b_annexb = 1;
     if (x264_param_apply_profile(&param, "baseline") < 0) {
         m_error = "x264 profile baseline failed";
         return false;
     }
+    /* apply_profile may reset the GOP settings — re-assert closed GOP so
+     * the stream starts with a real IDR slice (type 5); the head unit's
+     * decoder refuses to start on an open-GOP I/P frame (black screen). */
+    param.b_open_gop = 0;
+    param.i_keyint_max = fps / 2;
+    param.i_keyint_min = 1;
 
     m_enc = x264_encoder_open(&param);
     if (!m_enc) {
@@ -50,6 +57,8 @@ bool X264Encoder::init(int width, int height, int fps, int bitrate,
         return false;
     }
     m_pic->i_pts = 0;
+    fprintf(stderr, "x264 cfg: open_gop=%d keyint_max=%d keyint_min=%d fps=%d threads=%d\n",
+            param.b_open_gop, param.i_keyint_max, param.i_keyint_min, fps, param.i_threads);
     return true;
 }
 
@@ -77,6 +86,7 @@ bool X264Encoder::encode(const uint8_t *i420, size_t size)
     if (sz > 0 && m_cb && nals) {
         for (int i = 0; i < i_nals; i++) {
             bool idr = (nals[i].i_type == NAL_SLICE_IDR);
+            fprintf(stderr, "cap NAL type=%d size=%d\n", nals[i].i_type, nals[i].i_payload);
             m_cb(nals[i].p_payload, nals[i].i_payload, idr);
         }
     }
