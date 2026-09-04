@@ -608,6 +608,7 @@ public:
     {
         setSize(QSizeF(22, 30));
         setZ(10000);
+        setVisible(false);   // car-UI is touch-driven; no pointer arrow
     }
     void paint(QPainter *p) override
     {
