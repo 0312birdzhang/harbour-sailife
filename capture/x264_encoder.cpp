@@ -28,6 +28,13 @@ bool X264Encoder::init(int width, int height, int fps, int bitrate,
     param.i_csp = X264_CSP_I420;
     param.rc.i_rc_method = X264_RC_ABR;
     param.rc.i_bitrate = bitrate / 1000;
+    /* Bound the per-frame size. On high-detail content (browser pages) an
+     * unconstrained IDR balloons to ~470KB, which overruns the head unit's
+     * decode buffer and kills the session right at the first video frame.
+     * VBV with a 4-frame buffer caps one AU at ~bitrate/fps*4 (~66KB at
+     * 4Mbps/30fps) and makes rate control spread the rest over the GOP. */
+    param.rc.i_vbv_max_bitrate = bitrate / 1000;
+    param.rc.i_vbv_buffer_size = bitrate / 1000 * 4 / fps + 1;
     param.i_keyint_max = fps / 2;  /* 0.5s GOP: fast resync */
     param.i_keyint_min = 1;
     param.b_open_gop = 0;           /* closed GOP: IDR frames */
@@ -57,8 +64,10 @@ bool X264Encoder::init(int width, int height, int fps, int bitrate,
         return false;
     }
     m_pic->i_pts = 0;
-    fprintf(stderr, "x264 cfg: open_gop=%d keyint_max=%d keyint_min=%d fps=%d threads=%d\n",
-            param.b_open_gop, param.i_keyint_max, param.i_keyint_min, fps, param.i_threads);
+    fprintf(stderr, "x264 cfg: open_gop=%d keyint_max=%d keyint_min=%d fps=%d threads=%d "
+                    "vbv_max=%d vbv_buf=%d\n",
+            param.b_open_gop, param.i_keyint_max, param.i_keyint_min, fps, param.i_threads,
+            param.rc.i_vbv_max_bitrate, param.rc.i_vbv_buffer_size);
     return true;
 }
 
