@@ -17,6 +17,13 @@ chmod 666 /tmp/carui-touch
 # InputHandler scans for at startup (it never rescans afterwards).
 nohup python3 /opt/carlife/carlife_proto.py > /opt/carlife/proto.log 2>&1 < /dev/null &
 sleep 1
+# At boot systemd may run us before lipstick is up; the compositor needs
+# its Wayland display, so wait for the socket (max 30s) and carry on.
+n=0
+while [ ! -S /run/user/100000/display/wayland-0 ] && [ $n -lt 60 ]; do
+    sleep 0.5
+    n=$((n+1))
+done
 su defaultuser -s /bin/sh -c "XDG_RUNTIME_DIR=/run/user/100000 WAYLAND_DISPLAY=../../display/wayland-0 /opt/carlife/imira-comp --width 1920 --height 720 > /home/defaultuser/comp.log 2>&1" < /dev/null > /dev/null 2>&1 &
 sleep 2
 su defaultuser -s /bin/sh -c "XDG_RUNTIME_DIR=/run/user/100000 QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=imira-comp-0 /opt/carlife/carui/carui /opt/carlife/carui/main.qml > /home/defaultuser/carui.log 2>&1" < /dev/null > /dev/null 2>&1 &

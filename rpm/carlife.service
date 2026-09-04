@@ -1,0 +1,14 @@
+[Unit]
+Description=CarLife projection chain (AOA/CarLife proto, virtual compositor, UI, capture)
+Documentation=file:/opt/carlife/README.txt
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/carlife/start_convergence.sh
+# Default KillMode=control-group SIGTERMs every process the script forked,
+# so `systemctl stop carlife` tears the whole chain down.
+
+[Install]
+WantedBy=multi-user.target
