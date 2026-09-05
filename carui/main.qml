@@ -140,35 +140,41 @@ Window {
     // item exactly, and the grid must never show through behind it
     Grid {
         id: grid
-        visible: carController.currentApp === ""
-        x: 140
-        width: parent.width - 140
-        anchors.verticalCenter: parent.verticalCenter
+        visible: carController.currentApp === "" && !root.settingsOpen
+        x: 160
+        width: parent.width - x - 20
         columns: 5
         spacing: 20
+        property int tileCount: carController.tiles.length
+        property int rowCount: Math.max(1, Math.ceil(tileCount / columns))
+        property real tileHeight: Math.min(
+            260, (root.height - 40 - (rowCount - 1) * spacing) / rowCount)
+        property real tileWidth: (width - (columns - 1) * spacing) / columns
+        height: rowCount * tileHeight + (rowCount - 1) * spacing
+        y: Math.max(20, (parent.height - height) / 2)
 
         Repeater {
             model: carController.tiles
             Rectangle {
-                width: 300
-                height: 260
+                width: grid.tileWidth
+                height: grid.tileHeight
                 radius: 24
                 color: tileMA.pressed ? "#1e2c47" : "#131a29"
                 Image {
                     anchors.top: parent.top
-                    anchors.topMargin: 36
+                    anchors.topMargin: Math.max(14, parent.height * 0.13)
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: 96
-                    height: 96
+                    width: Math.min(96, parent.height * 0.42)
+                    height: width
                     fillMode: Image.PreserveAspectFit
                     source: modelData.icon !== "" ? "file://" + modelData.icon : ""
                     visible: modelData.icon !== ""
                 }
                 Text {
                     anchors.top: parent.top
-                    anchors.topMargin: 40
+                    anchors.topMargin: Math.max(14, parent.height * 0.14)
                     anchors.horizontalCenter: parent.horizontalCenter
-                    font.pixelSize: 84
+                    font.pixelSize: Math.min(84, parent.height * 0.38)
                     visible: modelData.icon === ""
                     text: root.categoryIcon(modelData.category)
                 }
@@ -199,6 +205,15 @@ Window {
         visible: settingsOpen
         anchors.fill: parent
         color: "#11131a"
+
+        // Modal input barrier. A Rectangle only paints; without an accepting
+        // item, clicks in settings-page gaps fall through to the home-grid
+        // MouseAreas and launch apps behind the overlay.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            preventStealing: true
+        }
 
         Rectangle {
             id: settingsHeader

@@ -1,10 +1,9 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlContext>
 #include <QUrl>
 #include <QQuickWindow>
-#include <QQuickItem>
-#include <QTimer>
 #include <QObject>
 #include <QProcess>
 #include <QFile>
@@ -13,11 +12,9 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QStringList>
+#include <QSet>
 #include <algorithm>
-#include <functional>
 #include <cstdio>
-#include <fcntl.h>
-#include <unistd.h>
 
 static const char *kSystemConfig = "/opt/carlife/carui-apps.conf";
 
@@ -231,8 +228,6 @@ static QVector<AppInfo> readApps()
     return apps;
 }
 
-static QHash<QString, qint64> s_appPids;   // exec -> last launched pid
-
 static qint64 launchApp(const QString &exec)
 {
     QString cmd = QStringLiteral(
@@ -248,41 +243,12 @@ static qint64 launchApp(const QString &exec)
     return pid;
 }
 
-// A hidden app window (imira-comp "home" minimizes instead of destroying;
-// see imira-comp.cpp hideWindow) is reused so the same surface keeps its
-// input focus — re-launching would hit Qt 5.6's stale-focus bug.
-static bool isPidHidden(qint64 pid)
-{
-    QFile f(QStringLiteral("/tmp/imira-hidden"));
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return false;
-    return f.readAll().contains(QByteArray::number(pid));
-}
-
-static void showAppWindow(qint64 pid)
-{
-    FILE *tf = fopen("/tmp/imira-touch", "a");
-    if (tf) {
-        fprintf(tf, "S %lld\n", pid);
-        fclose(tf);
-    }
-    fprintf(stderr, "carui: show app pid=%lld\n", pid);
-}
-
-static bool imiraHasApp()
-{
-    QFile f(QStringLiteral("/tmp/imira-app-running"));
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return false;
-    return f.readAll().trimmed() == QStringLiteral("1");
-}
-
 static QVector<AppInfo> g_apps;
 
 // CarPlay-like shell state: dockApps = configured apps ordered by launch
 // recency (most recent first); the home grid hides under the app window,
-// so carui tracks which app is on screen (m_currentApp) and which one the
-// home button hid (m_hiddenApp) — dock taps toggle between launch and show.
+// so carui tracks which app is on screen and every still-running hidden app;
+// dock taps switch between them without creating duplicate processes.
 static QStringList g_recent;
 
 static void loadRecent()
@@ -450,6 +416,9 @@ public:
             f.write(m.value("appId").toString().toUtf8());
             f.write("\n");
         }
+        f.close();
+        if (f.error() != QFile::NoError)
+            return false;
         g_apps = readApps();
         emit tilesChanged();
         emit dockChanged();
@@ -487,9 +456,10 @@ public:
     {
         if (m_currentApp.isEmpty())
             return;
+        const QString appId = m_currentApp;
         hideCurrent();
         fprintf(stderr, "carui: home (hid %s)\n",
-                m_hiddenApp.toUtf8().constData());
+                appId.toUtf8().constData());
         emit currentAppChanged();
     }
 
@@ -502,8 +472,7 @@ signals:
 private:
     QVariantList m_rows;
     QString m_currentApp;
-    QString m_hiddenApp;
-
+    QSet<QString> m_hiddenApps;
     // CarPlay semantics: the tapped app replaces whatever is on screen; a
     // hidden app comes back instead of being launched twice (native apps
     // launched as bare binaries have no single-instance guard).
@@ -512,12 +481,15 @@ private:
     {
         if (appId == m_currentApp)
             return;   // already on screen
-        if (appId == m_hiddenApp) {
-            // still running, just hidden: bring it back (by name — the
-            // compositor's hidden stack may hold several apps)
+        if (m_hiddenApps.contains(appId)) {
+            // Switching between two already-running apps must hide the
+            // current one before restoring the requested one. Otherwise the
+            // compositor has two visible/input-capable content surfaces.
+            if (!m_currentApp.isEmpty())
+                hideCurrent();
             writeCmd(QStringLiteral("S ") + name);
             m_currentApp = appId;
-            m_hiddenApp.clear();
+            m_hiddenApps.remove(appId);
             fprintf(stderr, "carui: showing %s\n",
                     name.toUtf8().constData());
             emit currentAppChanged();
@@ -548,7 +520,7 @@ private:
     {
         const AvailableApp *a = findAvailable(m_currentApp);
         writeCmd(QStringLiteral("H ") + (a ? a->name : m_currentApp));
-        m_hiddenApp = m_currentApp;
+        m_hiddenApps.insert(m_currentApp);
         m_currentApp.clear();
     }
 };
@@ -582,80 +554,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int fifo = open("/tmp/carui-touch", O_RDONLY | O_NONBLOCK);
-    if (fifo >= 0) {
-        QTimer *timer = new QTimer(&app);
-        QObject::connect(timer, &QTimer::timeout, [win, fifo]() {
-            static char line[128];
-            static size_t pos = 0;
-            char buf[256];
-            ssize_t n;
-            while ((n = read(fifo, buf, sizeof(buf))) > 0) {
-                for (ssize_t i = 0; i < n; i++) {
-                    if (buf[i] == '\n') {
-                        line[pos] = 0;
-                        int a, x, y;
-                        if (sscanf(line, "%d %d %d", &a, &x, &y) == 3) {
-                            if (imiraHasApp()) {
-                                /* an app window is up: forward the tap to
-                                 * imira-comp which injects it into the app */
-                                FILE *tf = fopen("/tmp/imira-touch", "a");
-                                if (tf) {
-                                    fprintf(tf, "%d %d %d\n", a, x, y);
-                                    fclose(tf);
-                                }
-                                fprintf(stderr, "carui: fwd touch a=%d x=%d y=%d\n",
-                                        a, x, y);
-                                pos = 0;   /* reset line buffer before continue */
-                                continue;
-                            }
-                            if (a == 1) {
-                                QQuickItem *content =
-                                    qobject_cast<QQuickItem *>(win->contentItem());
-                                if (content) {
-                                    std::function<void(QQuickItem *)> walk;
-                                    bool hit = false;
-                                    int tileIdx = -1;
-                                    walk = [&](QQuickItem *it) {
-                                        if (hit)
-                                            return;
-                                        if (it->objectName().startsWith("tile_")) {
-                                            int idx = it->objectName().mid(5).toInt();
-                                            QPointF tl = it->mapToItem(content, QPointF(0, 0));
-                                            if (x >= tl.x() && x < tl.x() + it->width() &&
-                                                y >= tl.y() && y < tl.y() + it->height()) {
-                                                hit = true;
-                                                tileIdx = idx;
-                                                it->setProperty("scale", 0.85);
-                                                QQuickItem *item = it;
-                                                QTimer::singleShot(150, [item]() {
-                                                    item->setProperty("scale", 1.0);
-                                                });
-                                                return;
-                                            }
-                                        }
-                                        for (QQuickItem *c : it->childItems())
-                                            walk(c);
-                                    };
-                                    walk(content);
-                                    if (hit && tileIdx >= 0 && tileIdx < g_apps.size()) {
-                                        fprintf(stderr, "carui: launching %s\n",
-                                                g_apps[tileIdx].name.toUtf8().constData());
-                                        launchApp(g_apps[tileIdx].exec);
-                                    }
-                                }
-                            }
-                        }
-                        pos = 0;
-                    } else if (pos < sizeof(line) - 1) {
-                        line[pos++] = buf[i];
-                    }
-                }
-            }
-        });
-        timer->start(20);
-        fprintf(stderr, "carui: touch reader ready\n");
-    }
     fprintf(stderr, "carui: loaded %s\n", qml);
     return app.exec();
 }

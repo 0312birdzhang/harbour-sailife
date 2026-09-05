@@ -1,8 +1,7 @@
-import os, struct, time, sys, select, threading, subprocess, fcntl, ctypes, socket
+import os, struct, time, sys, select, threading, fcntl, ctypes, socket
 
 DEV = '/dev/usb/usb_accessory'
 FIFO = '/tmp/cast.h264'
-TOUCHD = '/opt/carlife/touchd'
 
 # USB gadget (AOA) control. When the head unit drops the session after a
 # timeout (e.g. heavy app slows the video), the accessory misc device is
@@ -14,9 +13,6 @@ UDC_NAME = 'a600000.dwc3'
 PID_DEFAULT = '0x4ee1'      # pre-AOA PID; the HU sends 0x51/0x52/0x53 to this
 PID_ACCESSORY = '0x2d00'    # AOA data mode
 
-# tablet screen (px)
-TAB_W = 1600
-TAB_H = 2560
 # head unit video size
 HU_W = 1920
 HU_H = 720
@@ -39,20 +35,6 @@ MSG_MEDIA_INIT = 0x00030001
 MSG_MEDIA_DATA = 0x00030006
 MSG_VIDEO_DATA = 0x00020001
 MSG_TOUCH_ACTION = 0x00068001
-
-touch_proc = None
-
-def start_touchd():
-    global touch_proc
-    if touch_proc and touch_proc.poll() is None:
-        return
-    try:
-        touch_proc = subprocess.Popen([TOUCHD], stdin=subprocess.PIPE)
-        print('touchd started', flush=True)
-    except OSError as e:
-        print('touchd start fail: %s' % e, flush=True)
-touch_proc = None
-carui_touch_fd = None
 
 # --- uinput synthetic mouse ------------------------------------------------
 # The compositor (imira-comp, harbour-imira original) drives its windows from
@@ -122,16 +104,8 @@ def uinput_click(down):
     uinput_ev(EV_KEY, BTN_LEFT, 1 if down else 0)
     uinput_ev(EV_SYN, 0, 0)
 
-def translate(cx, cy):
-    px = int(cx * TAB_W / HU_W)
-    py = int(cy * TAB_H / HU_H)
-    px = max(0, min(TAB_W - 1, px))
-    py = max(0, min(TAB_H - 1, py))
-    return px, py
-
 def handle_touch(fd, body):
     """Parse CarLife TOUCH CMD message and inject via uinput."""
-    global touch_proc
     if len(body) < 8:
         return
     carmsg_len = struct.unpack('>H', body[0:2])[0]
@@ -143,28 +117,36 @@ def handle_touch(fd, body):
         return
     fields = {}
     i = 0
+
+    def read_varint_at(pos):
+        val = 0
+        shift = 0
+        while pos < len(payload) and shift < 64:
+            b = payload[pos]
+            pos += 1
+            val |= (b & 0x7f) << shift
+            if not (b & 0x80):
+                return val, pos
+            shift += 7
+        return None, pos
+
     while i < len(payload):
         key = payload[i]
         i += 1
         field = key >> 3
         wire = key & 7
         if wire == 0:
-            val = 0
-            shift = 0
-            while True:
-                b = payload[i]
-                i += 1
-                val |= (b & 0x7f) << shift
-                if not (b & 0x80):
-                    break
-                shift += 7
+            val, i = read_varint_at(i)
+            if val is None:
+                return
             fields[field] = val
         elif wire == 2:
-            ln = payload[i]
-            i += 1
+            ln, i = read_varint_at(i)
+            if ln is None or i + ln > len(payload):
+                return
             i += ln
         else:
-            break
+            return
     action = fields.get(1, 0)
     cx = fields.get(2, 0)
     cy = fields.get(3, 0)
@@ -256,15 +238,33 @@ def export_video(service, payload):
     ts = int(time.time() * 1000) & 0xFFFFFFFF
     return int2b(len(payload)) + int2b(ts) + int2b(service) + payload
 
+_tx_lock = threading.Lock()
+
+def _write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError('USB write returned %d' % n)
+        view = view[n:]
+
 def send_frame(fd, msg_type, msg):
     head = bytes(3) + bytes([msg_type]) + int2b(len(msg))
     try:
-        os.write(fd, head)
-        os.write(fd, msg)
+        # CMD and VIDEO are produced by different threads. Keep header and
+        # payload atomic relative to other protocol frames and handle short
+        # writes from the accessory character device.
+        with _tx_lock:
+            if msg_type == VIDEO and (not g_connected or not g_stream_on):
+                return False
+            _write_all(fd, head)
+            _write_all(fd, msg)
         if msg_type != VIDEO:   # video is 30fps: logging every frame floods the log
             print('  [TX type=%d len=%d]' % (msg_type, len(msg)), flush=True)
+        return True
     except OSError as e:
         print('  [TX FAIL type=%d %s]' % (msg_type, e), flush=True)
+        return False
 
 class StreamReader:
     def __init__(self, fd):
@@ -592,7 +592,10 @@ def video_loop_fifo(stop):
             if not g_stream_on or not g_connected:
                 time.sleep(0.05)
                 continue
-            send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, frames[i % len(frames)]))
+            if not send_frame(g_fd, VIDEO,
+                              export_video(MSG_VIDEO_DATA, frames[i % len(frames)])):
+                time.sleep(0.05)
+                continue
             i += 1
             time.sleep(0.033)
         return
@@ -643,7 +646,9 @@ def video_loop_fifo(stop):
             if waiting_idr and not frame_has_idr(au):
                 continue
             waiting_idr = False
-            send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, au))
+            if not send_frame(g_fd, VIDEO, export_video(MSG_VIDEO_DATA, au)):
+                waiting_idr = True
+                break
     fifo.close()
 
 vis_w, vis_h = 1920, 720

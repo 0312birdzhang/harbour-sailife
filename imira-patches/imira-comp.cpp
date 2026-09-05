@@ -636,6 +636,13 @@ public:
         createOutput(window, QStringLiteral("imira"),
                      QStringLiteral("virtual-tv"));
         primaryOutput()->setGeometry(QRect(0, 0, width, height));
+        // Hard-clipped app viewport: even a stale/ignored 1920-wide buffer
+        // cannot draw outside the 1780px content area.
+        m_contentRoot = new QQuickItem(m_window->contentItem());
+        m_contentRoot->setPosition(QPointF(kDockW, 0));
+        m_contentRoot->setSize(QSizeF(m_width - kDockW, m_height));
+        m_contentRoot->setClip(true);
+        m_contentRoot->setZ(1);
     }
 
     void surfaceCreated(QWaylandSurface *surface) override
@@ -682,10 +689,12 @@ public:
             // CarLife content window (a launched app): fills the area right
             // of the shell's dock, no chrome. CarPlay-style, an app replaces
             // the one on screen. Native apps honour the resize request and
-            // land at scale 1; anything else is fitted, never cropped.
-            item->setParentItem(m_window->contentItem());
+            // keep a full 1920x720 app canvas; it is scaled as one image into the
+            // 1780px area beside the dock, so fixed-layout apps cannot lose
+            // their right edge.
+            item->setParentItem(m_contentRoot);
             item->setZ(m_nextContentZ++);
-            surface->requestSize(QSize(m_width - kDockW, m_height));
+            surface->requestSize(QSize(m_width, m_height));
             syncContent(item);
             QObject::connect(surface, &QWaylandSurface::sizeChanged,
                              [this, item]() { syncContent(item); });
@@ -743,27 +752,17 @@ public:
         bool visible;
     };
 
-    // Visual rect of a (possibly scaled, center-origin) surface item.
-    static QRectF itemVisualRect(QWaylandSurfaceItem *it)
-    {
-        const QPointF c(it->x() + it->width() / 2.0,
-                        it->y() + it->height() / 2.0);
-        const qreal k = it->scale();
-        return QRectF(c.x() - it->width() * k / 2.0,
-                      c.y() - it->height() * k / 2.0,
-                      it->width() * k, it->height() * k);
-    }
-
     QWaylandSurfaceItem *contentItemAt(const QPointF &pos) const
     {
         for (int i = m_content.count() - 1; i >= 0; --i) {
             const ContentWin &c = m_content.at(i);
             if (!c.visible)
                 continue;
-            if (itemVisualRect(c.item).contains(pos))
+            if (c.item->contains(c.item->mapFromScene(pos)))
                 return c.item;
         }
-        if (m_shellItem && itemVisualRect(m_shellItem).contains(pos))
+        if (m_shellItem
+            && m_shellItem->contains(m_shellItem->mapFromScene(pos)))
             return m_shellItem;
         return nullptr;
     }
@@ -778,8 +777,9 @@ public:
 
     // Fit a content surface into the area right of the dock, aspect
     // preserving, never cropped (same approach as WindowChrome::syncToSurface):
-    // the item is sized to the raw buffer and SCALED — clients that honour
-    // the 1780x720 request land at scale 1, the rest get fitted anyway.
+    // the item is
+    // sized to the raw buffer and SCALED — clients that honour the 1780x720
+    // request land at scale 1, the rest get fitted anyway.
     void syncContent(QWaylandSurfaceItem *item)
     {
         const QSize s = item->surface()->size();
@@ -791,7 +791,7 @@ public:
         const qreal ah = m_height;
         const qreal scale = qMin(aw / s.width(), ah / s.height());
         item->setScale(scale);
-        item->setPosition(QPointF(kDockW + (aw - s.width()) / 2.0,
+        item->setPosition(QPointF((aw - s.width()) / 2.0,
                                   (ah - s.height()) / 2.0));
         fprintf(stderr,
                 "imira-comp: content fit '%s' surface=%dx%d scale=%.2f\n",
@@ -816,29 +816,48 @@ public:
         for (const QByteArray &line : lines) {
             const QByteArray t = line.trimmed();
             if (t == "H" || t.startsWith("H ")) {
-                // home: hide the app on screen (only one is ever visible;
-                // carui names it, but the topmost visible is the same thing)
-                for (int i = m_content.count() - 1; i >= 0; --i) {
+                // Home/settings means no content surface may remain visible.
+                // Hide all, so an earlier state bug cannot leave a second
+                // window receiving input behind the first one.
+                for (int i = 0; i < m_content.count(); ++i) {
                     if (m_content.at(i).visible) {
                         m_content[i].visible = false;
                         m_content[i].item->setVisible(false);
-                        break;
                     }
                 }
             } else if (t == "S" || t.startsWith("S ")) {
-                // dock re-selected a hidden app: bring IT back on top.
-                // carui passes the app name; empty falls back to the most
-                // recently hidden one.
+                // Restore exactly one hidden app. Find the target first; if
+                // it no longer exists, preserve the current visible window.
                 const QString want = QString::fromUtf8(t.mid(1).trimmed());
+                int target = -1;
                 for (int i = m_content.count() - 1; i >= 0; --i) {
                     if (!m_content.at(i).visible
-                        && (want.isEmpty()
-                            || m_content.at(i).title.contains(want))) {
-                        m_content[i].visible = true;
-                        m_content[i].item->setVisible(true);
-                        m_content[i].item->setZ(m_nextContentZ++);
+                        && (want.isEmpty() || m_content.at(i).title == want)) {
+                        target = i;
                         break;
                     }
+                }
+                // Some clients decorate their title dynamically; retain a
+                // contains fallback, but prefer the unambiguous exact match.
+                if (target < 0 && !want.isEmpty()) {
+                    for (int i = m_content.count() - 1; i >= 0; --i) {
+                        if (!m_content.at(i).visible
+                            && m_content.at(i).title.contains(want)) {
+                            target = i;
+                            break;
+                        }
+                    }
+                }
+                if (target >= 0) {
+                    for (int i = 0; i < m_content.count(); ++i) {
+                        if (i != target && m_content.at(i).visible) {
+                            m_content[i].visible = false;
+                            m_content[i].item->setVisible(false);
+                        }
+                    }
+                    m_content[target].visible = true;
+                    m_content[target].item->setVisible(true);
+                    m_content[target].item->setZ(m_nextContentZ++);
                 }
             }
         }
@@ -1008,6 +1027,7 @@ private:
     // CarLife shell/content state (see contentItemAt / pollCarlifeCmd)
     static const int kDockW = 140;   // carui's own dock width on the left
     QWaylandSurfaceItem *m_shellItem = nullptr;
+    QQuickItem *m_contentRoot = nullptr;
     QVector<ContentWin> m_content;
     int m_nextContentZ = 10;
     qint64 m_cmdOff = 0;
