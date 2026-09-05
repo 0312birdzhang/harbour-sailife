@@ -682,13 +682,13 @@ public:
             // CarLife content window (a launched app): fills the area right
             // of the shell's dock, no chrome. CarPlay-style, an app replaces
             // the one on screen. Native apps honour the resize request and
-            // fill the content area; the QQ flatpak crashes on any resize
-            // (broken on its own) and just gets scaled into the item.
+            // land at scale 1; anything else is fitted, never cropped.
             item->setParentItem(m_window->contentItem());
-            item->setPosition(QPointF(kDockW, 0));
-            item->setSize(QSizeF(m_width - kDockW, m_height));
             item->setZ(m_nextContentZ++);
             surface->requestSize(QSize(m_width - kDockW, m_height));
+            syncContent(item);
+            QObject::connect(surface, &QWaylandSurface::sizeChanged,
+                             [this, item]() { syncContent(item); });
             for (int i = 0; i < m_content.count(); ++i) {
                 if (m_content.at(i).visible) {
                     m_content[i].visible = false;
@@ -743,21 +743,27 @@ public:
         bool visible;
     };
 
+    // Visual rect of a (possibly scaled, center-origin) surface item.
+    static QRectF itemVisualRect(QWaylandSurfaceItem *it)
+    {
+        const QPointF c(it->x() + it->width() / 2.0,
+                        it->y() + it->height() / 2.0);
+        const qreal k = it->scale();
+        return QRectF(c.x() - it->width() * k / 2.0,
+                      c.y() - it->height() * k / 2.0,
+                      it->width() * k, it->height() * k);
+    }
+
     QWaylandSurfaceItem *contentItemAt(const QPointF &pos) const
     {
         for (int i = m_content.count() - 1; i >= 0; --i) {
             const ContentWin &c = m_content.at(i);
             if (!c.visible)
                 continue;
-            if (QRectF(c.item->position(), QSizeF(c.item->width(),
-                                                  c.item->height()))
-                    .contains(pos))
+            if (itemVisualRect(c.item).contains(pos))
                 return c.item;
         }
-        if (m_shellItem
-            && QRectF(m_shellItem->position(),
-                      QSizeF(m_shellItem->width(), m_shellItem->height()))
-                   .contains(pos))
+        if (m_shellItem && itemVisualRect(m_shellItem).contains(pos))
             return m_shellItem;
         return nullptr;
     }
@@ -768,6 +774,25 @@ public:
             if (m_content.at(i).item == item)
                 m_content.removeAt(i);
         }
+    }
+
+    // Fit a content surface into the area right of the dock, aspect
+    // preserving, never cropped (same approach as WindowChrome::syncToSurface):
+    // the item is sized to the raw buffer and SCALED — clients that honour
+    // the 1780x720 request land at scale 1, the rest get fitted anyway.
+    void syncContent(QWaylandSurfaceItem *item)
+    {
+        const QSize s = item->surface()->size();
+        if (s.isEmpty())
+            return;
+        item->setSize(QSizeF(s));
+        item->setTransformOrigin(QQuickItem::Center);
+        const qreal aw = m_width - kDockW;
+        const qreal ah = m_height;
+        const qreal scale = qMin(aw / s.width(), ah / s.height());
+        item->setScale(scale);
+        item->setPosition(QPointF(kDockW + (aw - s.width()) / 2.0,
+                                  (ah - s.height()) / 2.0));
     }
 
     void pollCarlifeCmd()
