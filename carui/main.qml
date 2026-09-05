@@ -1,7 +1,7 @@
 import QtQuick 2.0
 import QtQuick.Window 2.0
 
-// CarPlay-style shell: left dock (clock, home, recent apps, settings) +
+// CarPlay-style shell: left dock (clock, recent apps, home) +
 // content area. The home grid lives in the content area; a launched app
 // window covers it (the compositor places chromeless app windows at
 // x=140..1920), the dock always stays visible on top of the left strip.
@@ -11,9 +11,8 @@ Window {
     width: 1920
     height: 720
     color: "#000000"
-    title: "CarLife UI"
+    title: "Sailife UI"
 
-    property bool settingsOpen: false
     property string clockText: Qt.formatDateTime(new Date(), "hh:mm")
     Timer {
         interval: 15000
@@ -50,28 +49,6 @@ Window {
             text: root.clockText
         }
 
-        // home button: back to the grid
-        Rectangle {
-            id: homeButton
-            anchors.top: clock.bottom
-            anchors.topMargin: 30
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: 96
-            height: 84
-            radius: 20
-            color: homeMA.pressed ? "#2e6bff" : "#1c2333"
-            Text {
-                anchors.centerIn: parent
-                font.pixelSize: 44
-                text: "⌂"
-            }
-            MouseArea {
-                id: homeMA
-                anchors.fill: parent
-                onClicked: carController.homeClicked()
-            }
-        }
-
         // recently used apps (most recent first; 4 fit between the home
         // button and the gear without overlapping)
         Repeater {
@@ -81,7 +58,7 @@ Window {
             }
             Rectangle {
                 x: 22
-                y: 200 + index * 92
+                y: 118 + index * 92
                 width: 96
                 height: 84
                 radius: 20
@@ -110,7 +87,7 @@ Window {
             }
         }
 
-        // settings entry, pinned to the bottom of the dock
+        // home entry, pinned to the bottom-left
         Rectangle {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 22
@@ -118,19 +95,16 @@ Window {
             width: 96
             height: 84
             radius: 20
-            color: gearMA.pressed ? "#2e6bff" : "#1c2333"
+            color: homeMA.pressed ? "#2e6bff" : "#1c2333"
             Text {
                 anchors.centerIn: parent
                 font.pixelSize: 42
-                text: "⚙"
+                text: "⌂"
             }
             MouseArea {
-                id: gearMA
+                id: homeMA
                 anchors.fill: parent
-                onClicked: {
-                    carController.openSettings()
-                    root.settingsOpen = true
-                }
+                onClicked: carController.homeClicked()
             }
         }
     }
@@ -140,7 +114,7 @@ Window {
     // item exactly, and the grid must never show through behind it
     Grid {
         id: grid
-        visible: carController.currentApp === "" && !root.settingsOpen
+        visible: carController.currentApp === ""
         x: 160
         width: parent.width - x - 20
         columns: 5
@@ -199,289 +173,4 @@ Window {
         }
     }
 
-    // ---------- settings page ----------
-    Rectangle {
-        id: settingsPage
-        visible: settingsOpen
-        anchors.fill: parent
-        color: "#11131a"
-
-        // Modal input barrier. A Rectangle only paints; without an accepting
-        // item, clicks in settings-page gaps fall through to the home-grid
-        // MouseAreas and launch apps behind the overlay.
-        MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.AllButtons
-            preventStealing: true
-        }
-
-        Rectangle {
-            id: settingsHeader
-            anchors.top: parent.top
-            width: parent.width
-            height: 64
-            color: "#1a2233"
-            Rectangle {
-                id: backButton
-                anchors.left: parent.left
-                anchors.leftMargin: 24
-                anchors.verticalCenter: parent.verticalCenter
-                width: 150
-                height: 44
-                radius: 10
-                color: backButtonMA.pressed ? "#2e6bff" : "#2a3550"
-                Text {
-                    anchors.centerIn: parent
-                    color: "#ffffff"
-                    font.pixelSize: 24
-                    text: "← 返回"
-                }
-                MouseArea {
-                    id: backButtonMA
-                    anchors.fill: parent
-                    onClicked: settingsOpen = false
-                }
-            }
-            Text {
-                anchors.centerIn: parent
-                color: "#e8eaf0"
-                font.pixelSize: 30
-                font.bold: true
-                text: "设置 — 分类与应用"
-            }
-            Rectangle {
-                id: saveButton
-                anchors.right: parent.right
-                anchors.rightMargin: 24
-                anchors.verticalCenter: parent.verticalCenter
-                width: 150
-                height: 44
-                radius: 10
-                color: "#2e6bff"
-                Text {
-                    anchors.centerIn: parent
-                    color: "#ffffff"
-                    font.pixelSize: 24
-                    font.bold: true
-                    text: "保存"
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: {
-                        if (carController.saveConfig())
-                            settingsOpen = false
-                    }
-                }
-            }
-        }
-
-        // left: current mappings
-        Text {
-            id: mapLabel
-            anchors.top: settingsHeader.bottom
-            anchors.left: parent.left
-            anchors.leftMargin: 30
-            anchors.topMargin: 16
-            color: "#8fa3c2"
-            font.pixelSize: 24
-            text: "分类映射 (点击 ✕ 删除)"
-        }
-        ListView {
-            id: mapList
-            anchors.top: mapLabel.bottom
-            anchors.topMargin: 10
-            anchors.left: parent.left
-            anchors.leftMargin: 30
-            width: 760
-            height: parent.height - settingsHeader.height - 46
-            spacing: 10
-            clip: true
-            model: carController.rows
-            delegate: Rectangle {
-                width: 740
-                height: 64
-                radius: 12
-                color: "#223049"
-                Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 20
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 180
-                    elide: Text.ElideRight
-                    color: "#7fd0ff"
-                    font.pixelSize: 26
-                    font.bold: true
-                    text: modelData.category
-                }
-                Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 210
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 420
-                    elide: Text.ElideRight
-                    color: "#ffffff"
-                    font.pixelSize: 26
-                    text: modelData.appName
-                }
-                Rectangle {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 56
-                    height: 44
-                    radius: 8
-                    color: delMA.pressed ? "#ff5a5a" : "#33415e"
-                    Text {
-                        anchors.centerIn: parent
-                        color: "#ffffff"
-                        font.pixelSize: 26
-                        text: "✕"
-                    }
-                    MouseArea {
-                        id: delMA
-                        anchors.fill: parent
-                        onClicked: carController.removeMapping(index)
-                    }
-                }
-            }
-        }
-
-        // right: add-mapping flow
-        Text {
-            id: pickCatLabel
-            anchors.top: settingsHeader.bottom
-            anchors.left: parent.left
-            anchors.leftMargin: 850
-            anchors.topMargin: 16
-            color: "#8fa3c2"
-            font.pixelSize: 24
-            text: "1. 选择分类"
-        }
-        Flow {
-            id: catFlow
-            anchors.top: pickCatLabel.bottom
-            anchors.topMargin: 10
-            anchors.left: parent.left
-            anchors.leftMargin: 850
-            width: 1020
-            spacing: 12
-            Repeater {
-                model: {
-                    var x = carController.rows   // re-evaluate on rowsChanged
-                    return root.categoryChoices()
-                }
-                Rectangle {
-                    width: catText.width + 40
-                    height: 52
-                    radius: 12
-                    color: root.selectedCategory === modelData
-                           ? "#2e6bff" : catMA.pressed ? "#2a3a55" : "#223049"
-                    Text {
-                        id: catText
-                        anchors.centerIn: parent
-                        color: "#ffffff"
-                        font.pixelSize: 24
-                        text: modelData
-                    }
-                    MouseArea {
-                        id: catMA
-                        anchors.fill: parent
-                        onClicked: root.selectedCategory = modelData
-                    }
-                }
-            }
-        }
-
-        Text {
-            id: pickAppLabel
-            anchors.top: catFlow.bottom
-            anchors.topMargin: 18
-            anchors.left: parent.left
-            anchors.leftMargin: 850
-            color: "#8fa3c2"
-            font.pixelSize: 24
-            text: root.selectedCategory === ""
-                  ? "2. 先选一个分类" : "2. 选择应用 (含 Flatpak / 安卓)"
-        }
-        ListView {
-            id: appList
-            anchors.top: pickAppLabel.bottom
-            anchors.topMargin: 10
-            anchors.left: parent.left
-            anchors.leftMargin: 850
-            width: 1020
-            height: parent.height - pickAppLabel.y - 46
-            spacing: 8
-            clip: true
-            model: {
-                var x = carController.rows   // re-evaluate on rowsChanged
-                return root.availableChoices()
-            }
-            delegate: Rectangle {
-                width: 1000
-                height: 58
-                radius: 10
-                color: appMA.pressed ? "#2a3a55" : "#1a2233"
-                Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 20
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 500
-                    elide: Text.ElideRight
-                    color: "#ffffff"
-                    font.pixelSize: 26
-                    text: modelData.name
-                }
-                Text {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 20
-                    anchors.verticalCenter: parent.verticalCenter
-                    elide: Text.ElideMiddle
-                    color: "#5f718f"
-                    font.pixelSize: 20
-                    text: modelData.id
-                }
-                MouseArea {
-                    id: appMA
-                    anchors.fill: parent
-                    onClicked: {
-                        if (root.selectedCategory !== "")
-                            carController.addMapping(root.selectedCategory,
-                                                     modelData.id)
-                    }
-                }
-            }
-        }
-    }
-
-    property var selectedCategory: ""
-
-    property var presetCategories: [
-        "音乐", "电话", "信息", "导航", "视频",
-        "天气", "工具", "社交", "阅读", "其他"
-    ]
-
-    function categoryChoices() {
-        var out = presetCategories.slice()
-        var rows = carController.rows
-        for (var i = 0; i < rows.length; i++) {
-            var c = rows[i].category
-            if (out.indexOf(c) < 0)
-                out.push(c)
-        }
-        return out
-    }
-
-    function availableChoices() {
-        var all = carController.availableApps()
-        var rows = carController.rows
-        var used = {}
-        for (var i = 0; i < rows.length; i++)
-            used[rows[i].appId] = true
-        var out = []
-        for (var j = 0; j < all.length; j++)
-            if (!used[all[j].id])
-                out.push(all[j])
-        return out
-    }
 }

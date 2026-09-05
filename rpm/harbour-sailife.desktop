@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Sailife
+Icon=harbour-sailife
+Exec=/usr/bin/invoker --type=silica-qt5 -s -n -d 5 /opt/carlife/carui/carui /opt/carlife/carui/mobile-settings.qml
+X-Nemo-Application-Type=silica-qt5

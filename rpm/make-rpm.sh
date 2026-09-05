@@ -19,9 +19,9 @@ rm -rf "$WORK"
 mkdir -p "$STAGE/rpm/payload" "$STAGE/carlife-proto" "$STAGE/carui" "$STAGE/scripts"
 # exactly the set the spec installs (plus the carui sources for reference)
 cp "$REPO"/carlife-proto/carlife_proto.py "$REPO"/carlife-proto/aoa_manager.py "$STAGE/carlife-proto/"
-cp "$REPO"/carui/main.cpp "$REPO"/carui/main.qml "$REPO"/carui/carui.pro "$REPO"/carui/carui-apps.conf "$STAGE/carui/"
-cp "$REPO"/scripts/start_convergence.sh "$STAGE/scripts/"
-cp "$REPO"/rpm/harbour-sailife.spec "$REPO"/rpm/carlife.service "$STAGE/rpm/"
+cp "$REPO"/carui/main.cpp "$REPO"/carui/main.qml "$REPO"/carui/mobile-settings.qml "$REPO"/carui/harbour-sailife.png "$REPO"/carui/carui.pro "$REPO"/carui/carui-apps.conf "$STAGE/carui/"
+cp "$REPO"/scripts/start_convergence.sh "$REPO"/scripts/audio_bridge.sh "$STAGE/scripts/"
+cp "$REPO"/rpm/harbour-sailife.spec "$REPO"/rpm/sailife.service "$REPO"/rpm/harbour-sailife.desktop "$REPO"/rpm/50-sailife.rules "$REPO"/rpm/sailife-xpolicy.conf "$STAGE/rpm/"
 cp "$REPO"/rpm/payload/imira-comp "$REPO"/rpm/payload/carui "$REPO"/rpm/payload/carlife-capture "$STAGE/rpm/payload/"
 
 cd "$WORK"

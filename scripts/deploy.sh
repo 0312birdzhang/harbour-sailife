@@ -33,7 +33,7 @@ case "$MODE" in
     cat > "$TMP/root-job.sh" <<'EOF'
 #!/bin/sh
 rpm -Uvh --force /tmp/harbour-sailife.rpm
-systemctl status carlife.service --no-pager | head -8
+systemctl status sailife.service --no-pager | head -8
 EOF
     ;;
 *)

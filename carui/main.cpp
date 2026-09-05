@@ -4,17 +4,25 @@
 #include <QQmlContext>
 #include <QUrl>
 #include <QQuickWindow>
+#include <QQuickView>
 #include <QObject>
 #include <QProcess>
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QDateTime>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCall>
+#include <QDBusVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QStringList>
 #include <QSet>
+#include <QTimer>
 #include <algorithm>
 #include <cstdio>
+#include <sailfishapp.h>
 
 static const char *kSystemConfig = "/opt/carlife/carui-apps.conf";
 
@@ -165,6 +173,10 @@ static void scanAvailableApps()
                 continue;
             AvailableApp a;
             a.id = fn.left(fn.size() - 8);
+            // The phone-side configurator is not a projected app. Listing it
+            // here would let users recursively launch Sailife on the car UI.
+            if (a.id == QLatin1String("harbour-sailife"))
+                continue;
             a.name = name;
             a.exec = execIsRunnerStyle(exec) ? exec : extractBinary(exec);
             a.icon = resolveIcon(icon);
@@ -228,14 +240,20 @@ static QVector<AppInfo> readApps()
     return apps;
 }
 
-static qint64 launchApp(const QString &exec)
+static QString appKey(const QString &appId)
+{
+    return QString::fromLatin1(appId.toUtf8().toBase64());
+}
+
+static qint64 launchApp(const QString &appId, const QString &exec)
 {
     QString cmd = QStringLiteral(
         "QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=imira-comp-0 "
         "QT_IM_MODULE=none "
         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/100000/dbus/"
         "user_bus_socket ");
-    cmd += QStringLiteral("exec ") + exec;
+    cmd += QStringLiteral("CARLIFE_APP_KEY=") + appKey(appId)
+           + QStringLiteral(" exec ") + exec;
     qint64 pid = 0;
     QProcess::startDetached(QStringLiteral("/bin/sh"),
                             QStringList() << QStringLiteral("-c") << cmd,
@@ -293,11 +311,24 @@ class CarUiController : public QObject
     Q_OBJECT
     Q_PROPERTY(QVariantList tiles READ tiles NOTIFY tilesChanged)
     Q_PROPERTY(QVariantList rows READ rows NOTIFY rowsChanged)
+    Q_PROPERTY(QStringList selectedApps READ selectedApps NOTIFY rowsChanged)
     Q_PROPERTY(QVariantList dockApps READ dockApps NOTIFY dockChanged)
     Q_PROPERTY(QString currentApp READ currentApp NOTIFY currentAppChanged)
+    Q_PROPERTY(bool serviceRunning READ serviceRunning NOTIFY serviceRunningChanged)
 
 public:
-    explicit CarUiController(QObject *parent = nullptr) : QObject(parent) {}
+    explicit CarUiController(QObject *parent = nullptr) : QObject(parent)
+    {
+        QTimer *timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, [this]() {
+            const QDateTime stamp = QFileInfo(userConfigPath()).lastModified();
+            if (stamp != m_configStamp)
+                reloadConfig();
+            updateServiceState();
+        });
+        timer->start(1000);
+        updateServiceState();
+    }
 
     // one tile per config row (a category may appear several times)
     QVariantList tiles() const
@@ -332,13 +363,37 @@ public:
 
     // current editor state: [{category, appId, appName}, …]
     QVariantList rows() const { return m_rows; }
+    QStringList selectedApps() const
+    {
+        QStringList ids;
+        for (const QVariant &v : m_rows) {
+            const QString id = v.toMap().value(QStringLiteral("appId")).toString();
+            if (!id.isEmpty() && !ids.contains(id))
+                ids.append(id);
+        }
+        return ids;
+    }
 
     // appId of the app currently on screen ("" = home grid visible)
     QString currentApp() const { return m_currentApp; }
+    bool serviceRunning() const { return m_serviceRunning; }
+
+    Q_INVOKABLE void setServiceRunning(bool running)
+    {
+        QDBusMessage call = QDBusMessage::createMethodCall(
+            QStringLiteral("org.freedesktop.systemd1"),
+            QStringLiteral("/org/freedesktop/systemd1"),
+            QStringLiteral("org.freedesktop.systemd1.Manager"),
+            running ? QStringLiteral("StartUnit") : QStringLiteral("StopUnit"));
+        call << QStringLiteral("sailife.service") << QStringLiteral("replace");
+        QDBusConnection::systemBus().asyncCall(call);
+        QTimer::singleShot(500, this, [this]() { updateServiceState(); });
+    }
 
     Q_INVOKABLE void reloadConfig()
     {
         scanAvailableApps();
+        g_apps = readApps();
         // recency entries for apps that no longer resolve are dead weight
         QStringList valid;
         for (const QString &id : g_recent) {
@@ -350,7 +405,6 @@ public:
                 valid.append(a.appId);
         }
         g_recent = valid;
-        g_apps = readApps();
         m_rows.clear();
         for (const AppInfo &a : g_apps) {
             QVariantMap m;
@@ -361,6 +415,7 @@ public:
         }
         emit tilesChanged();
         emit rowsChanged();
+        m_configStamp = QFileInfo(userConfigPath()).lastModified();
         emit dockChanged();
         fprintf(stderr, "carui: %d apps configured\n", g_apps.size());
     }
@@ -372,6 +427,7 @@ public:
             QVariantMap m;
             m.insert(QStringLiteral("id"), a.id);
             m.insert(QStringLiteral("name"), a.name);
+            m.insert(QStringLiteral("icon"), a.icon);
             l.append(m);
         }
         return l;
@@ -403,6 +459,30 @@ public:
         emit rowsChanged();
     }
 
+    Q_INVOKABLE bool toggleApp(const QString &appId)
+    {
+        bool removed = false;
+        for (int i = m_rows.size() - 1; i >= 0; --i) {
+            if (m_rows.at(i).toMap().value(QStringLiteral("appId")).toString()
+                    == appId) {
+                m_rows.removeAt(i);
+                removed = true;
+            }
+        }
+        if (!removed) {
+            const AvailableApp *a = findAvailable(appId);
+            if (!a)
+                return false;
+            QVariantMap m;
+            m.insert(QStringLiteral("category"), QStringLiteral("其他"));
+            m.insert(QStringLiteral("appId"), appId);
+            m.insert(QStringLiteral("appName"), a->name);
+            m_rows.append(m);
+        }
+        emit rowsChanged();
+        return saveConfig();
+    }
+
     Q_INVOKABLE bool saveConfig()
     {
         QFile f(userConfigPath());
@@ -420,6 +500,7 @@ public:
         if (f.error() != QFile::NoError)
             return false;
         g_apps = readApps();
+        m_configStamp = QFileInfo(userConfigPath()).lastModified();
         emit tilesChanged();
         emit dockChanged();
         fprintf(stderr, "carui: config saved, %d apps\n", g_apps.size());
@@ -442,16 +523,6 @@ public:
         activate(appId, a->exec, a->name);
     }
 
-    // gear: hide whatever is on screen, then open the settings overlay
-    Q_INVOKABLE void openSettings()
-    {
-        if (!m_currentApp.isEmpty()) {
-            hideCurrent();
-            emit currentAppChanged();
-        }
-        reloadConfig();
-    }
-
     Q_INVOKABLE void homeClicked()
     {
         if (m_currentApp.isEmpty())
@@ -468,11 +539,39 @@ signals:
     void rowsChanged();
     void dockChanged();
     void currentAppChanged();
+    void serviceRunningChanged();
 
 private:
     QVariantList m_rows;
     QString m_currentApp;
     QSet<QString> m_hiddenApps;
+    QString m_lastHiddenApp;
+    QDateTime m_configStamp;
+    bool m_serviceRunning = false;
+
+    void updateServiceState()
+    {
+        QDBusMessage call = QDBusMessage::createMethodCall(
+            QStringLiteral("org.freedesktop.systemd1"),
+            QStringLiteral("/org/freedesktop/systemd1/unit/sailife_2eservice"),
+            QStringLiteral("org.freedesktop.DBus.Properties"),
+            QStringLiteral("Get"));
+        call << QStringLiteral("org.freedesktop.systemd1.Unit")
+             << QStringLiteral("ActiveState");
+        const QDBusMessage reply = QDBusConnection::systemBus().call(call);
+        bool running = false;
+        if (!reply.arguments().isEmpty()) {
+            const QDBusVariant value = qvariant_cast<QDBusVariant>(
+                reply.arguments().first());
+            const QString state = value.variant().toString();
+            running = state == QLatin1String("active")
+                   || state == QLatin1String("activating");
+        }
+        if (running != m_serviceRunning) {
+            m_serviceRunning = running;
+            emit serviceRunningChanged();
+        }
+    }
     // CarPlay semantics: the tapped app replaces whatever is on screen; a
     // hidden app comes back instead of being launched twice (native apps
     // launched as bare binaries have no single-instance guard).
@@ -482,12 +581,15 @@ private:
         if (appId == m_currentApp)
             return;   // already on screen
         if (m_hiddenApps.contains(appId)) {
+            const bool restoreLast = m_currentApp.isEmpty()
+                                     && appId == m_lastHiddenApp;
             // Switching between two already-running apps must hide the
             // current one before restoring the requested one. Otherwise the
             // compositor has two visible/input-capable content surfaces.
             if (!m_currentApp.isEmpty())
                 hideCurrent();
-            writeCmd(QStringLiteral("S ") + name);
+            writeCmd(restoreLast ? QStringLiteral("S")
+                                 : QStringLiteral("S ") + appKey(appId));
             m_currentApp = appId;
             m_hiddenApps.remove(appId);
             fprintf(stderr, "carui: showing %s\n",
@@ -496,7 +598,7 @@ private:
             return;
         }
         fprintf(stderr, "carui: launching %s\n", name.toUtf8().constData());
-        launchApp(exec);
+        launchApp(appId, exec);
         moveToFront(appId);
         if (!m_currentApp.isEmpty())
             hideCurrent();   // the new app replaces the one on screen
@@ -518,17 +620,21 @@ private:
     // stacked hidden apps apart)
     void hideCurrent()
     {
-        const AvailableApp *a = findAvailable(m_currentApp);
-        writeCmd(QStringLiteral("H ") + (a ? a->name : m_currentApp));
+        writeCmd(QStringLiteral("H"));
         m_hiddenApps.insert(m_currentApp);
+        m_lastHiddenApp = m_currentApp;
         m_currentApp.clear();
     }
 };
 
-int main(int argc, char **argv)
+Q_DECL_EXPORT int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
-    app.setApplicationName("carlife-ui");
+    const bool mobileSettings = argc > 1
+        && QString::fromLocal8Bit(argv[1]).endsWith(
+            QStringLiteral("mobile-settings.qml"));
+    app.setApplicationName(mobileSettings ? QStringLiteral("harbour-sailife")
+                                          : QStringLiteral("carlife-ui"));
     QQmlApplicationEngine engine;
 
     CarUiController controller;
@@ -537,6 +643,24 @@ int main(int argc, char **argv)
     controller.reloadConfig();
 
     const char *qml = argc > 1 ? argv[1] : "/opt/carlife/carui/main.qml";
+    if (mobileSettings) {
+        QQuickView *view = SailfishApp::createView();
+        view->rootContext()->setContextProperty("carController", &controller);
+        view->setSource(QUrl::fromLocalFile(QString::fromLocal8Bit(qml)));
+        if (view->status() == QQuickView::Error) {
+            for (const auto &e : view->errors())
+                fprintf(stderr, "QML error: %s\n",
+                        e.toString().toUtf8().constData());
+            delete view;
+            return 1;
+        }
+        view->show();
+        fprintf(stderr, "carui: showing mobile settings %s\n", qml);
+        const int result = app.exec();
+        delete view;
+        return result;
+    }
+
     QQmlComponent comp(&engine, QUrl::fromLocalFile(qml));
     if (comp.isError()) {
         for (const auto &e : comp.errors())
@@ -549,7 +673,7 @@ int main(int argc, char **argv)
         return 1;
     }
     QQuickWindow *win = qobject_cast<QQuickWindow *>(rootObj);
-    if (!win) {
+    if (!win && !mobileSettings) {
         fprintf(stderr, "carui: no window\n");
         return 1;
     }

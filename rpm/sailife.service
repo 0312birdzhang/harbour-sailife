@@ -1,5 +1,5 @@
 [Unit]
-Description=CarLife projection chain (AOA/CarLife proto, virtual compositor, UI, capture)
+Description=Sailife projection service
 Documentation=file:/opt/carlife/README.txt
 After=multi-user.target
 

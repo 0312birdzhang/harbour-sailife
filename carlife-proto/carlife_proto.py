@@ -2,6 +2,7 @@ import os, struct, time, sys, select, threading, fcntl, ctypes, socket
 
 DEV = '/dev/usb/usb_accessory'
 FIFO = '/tmp/cast.h264'
+AUDIO_FIFO = '/tmp/sailife-audio.pcm'
 
 # USB gadget (AOA) control. When the head unit drops the session after a
 # timeout (e.g. heavy app slows the video), the accessory misc device is
@@ -259,7 +260,7 @@ def send_frame(fd, msg_type, msg):
                 return False
             _write_all(fd, head)
             _write_all(fd, msg)
-        if msg_type != VIDEO:   # video is 30fps: logging every frame floods the log
+        if msg_type not in (VIDEO, MEDIA):
             print('  [TX type=%d len=%d]' % (msg_type, len(msg)), flush=True)
         return True
     except OSError as e:
@@ -651,9 +652,43 @@ def video_loop_fifo(stop):
                 break
     fifo.close()
 
+def audio_loop_fifo(stop):
+    """Forward 48 kHz stereo S16LE in the 2560-byte chunks used by the
+    reference mobile implementation. Drain while disconnected so stale
+    audio is never replayed after a reconnect."""
+    try:
+        fifo = open(AUDIO_FIFO, 'rb', buffering=0)
+    except OSError as e:
+        print('audio fifo error: %s' % e, flush=True)
+        return
+    print('audio FIFO source: %s' % AUDIO_FIFO, flush=True)
+    buf = b''
+    while not stop.is_set():
+        try:
+            data = fifo.read(4096)
+        except OSError:
+            time.sleep(0.05)
+            continue
+        if not data:
+            time.sleep(0.01)
+            continue
+        if not g_stream_on or not g_connected:
+            buf = b''
+            continue
+        buf += data
+        while len(buf) >= 2560:
+            pcm, buf = buf[:2560], buf[2560:]
+            if not send_frame(g_fd, MEDIA,
+                              export_video(MSG_MEDIA_DATA, pcm)):
+                buf = b''
+                break
+    fifo.close()
+
 vis_w, vis_h = 1920, 720
 video_thread = None
 video_stop = threading.Event()
+audio_stop = threading.Event()
+threading.Thread(target=audio_loop_fifo, args=(audio_stop,), daemon=True).start()
 print('carlife_proto started, waiting...', flush=True)
 try:
     uinput_init()   # create the synthetic mouse before imira-comp scans /dev/input

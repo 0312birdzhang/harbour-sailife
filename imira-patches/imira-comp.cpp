@@ -653,6 +653,7 @@ public:
             // Cover windows are the little home-screen cards — they belong
             // to the phone's launcher, not onto the TV desktop.
             const QString title = surface->title();
+            const QString appKey = clientAppKey(surface);
             const QString category = surface->windowProperties()
                                          .value(QStringLiteral("CATEGORY"))
                                          .toString();
@@ -667,7 +668,7 @@ public:
             QWaylandSurfaceItem *item =
                 static_cast<QWaylandSurfaceItem *>(createView(qs));
             item->setTouchEventsEnabled(false);
-            if (title.contains(QLatin1String("CarLife UI"))) {
+            if (title.contains(QLatin1String("Sailife UI"))) {
                 // The CarLife shell (our launcher): fullscreen, no chrome,
                 // no dock — it owns the whole 1920x720 screen.
                 item->setParentItem(m_window->contentItem());
@@ -705,10 +706,12 @@ public:
                 }
             }
             for (int i = m_content.count() - 1; i >= 0; --i) {
-                if (!m_content.at(i).visible && m_content.at(i).title == title)
+                if (!m_content.at(i).visible
+                    && ((!appKey.isEmpty() && m_content.at(i).appKey == appKey)
+                        || (appKey.isEmpty() && m_content.at(i).title == title)))
                     m_content.removeAt(i);   // stale hidden entry, same app
             }
-            m_content.append(ContentWin{item, title, true});
+            m_content.append(ContentWin{item, title, appKey, true, 0});
             QObject::connect(surface, &QWaylandSurface::unmapped,
                              [this, item]() { removeContent(item); });
             QObject::connect(surface, &QWaylandSurface::surfaceDestroyed,
@@ -749,8 +752,25 @@ public:
     struct ContentWin {
         QWaylandSurfaceItem *item;
         QString title;
+        QString appKey;
         bool visible;
+        quint64 hiddenOrder;
     };
+
+    static QString clientAppKey(QWaylandSurface *surface)
+    {
+        const qint64 pid = surface->client()->processId();
+        QFile f(QStringLiteral("/proc/%1/environ").arg(pid));
+        if (!f.open(QIODevice::ReadOnly))
+            return QString();
+        const QByteArray prefix("CARLIFE_APP_KEY=");
+        const QList<QByteArray> vars = f.readAll().split(char(0));
+        for (const QByteArray &v : vars) {
+            if (v.startsWith(prefix))
+                return QString::fromLatin1(v.mid(prefix.size()));
+        }
+        return QString();
+    }
 
     QWaylandSurfaceItem *contentItemAt(const QPointF &pos) const
     {
@@ -822,6 +842,7 @@ public:
                 for (int i = 0; i < m_content.count(); ++i) {
                     if (m_content.at(i).visible) {
                         m_content[i].visible = false;
+                        m_content[i].hiddenOrder = ++m_hideSerial;
                         m_content[i].item->setVisible(false);
                     }
                 }
@@ -830,15 +851,26 @@ public:
                 // it no longer exists, preserve the current visible window.
                 const QString want = QString::fromUtf8(t.mid(1).trimmed());
                 int target = -1;
-                for (int i = m_content.count() - 1; i >= 0; --i) {
-                    if (!m_content.at(i).visible
-                        && (want.isEmpty() || m_content.at(i).title == want)) {
-                        target = i;
-                        break;
+                if (want.isEmpty()) {
+                    quint64 newest = 0;
+                    for (int i = 0; i < m_content.count(); ++i) {
+                        if (!m_content.at(i).visible
+                            && m_content.at(i).hiddenOrder >= newest) {
+                            newest = m_content.at(i).hiddenOrder;
+                            target = i;
+                        }
+                    }
+                } else {
+                    for (int i = m_content.count() - 1; i >= 0; --i) {
+                        if (!m_content.at(i).visible
+                            && m_content.at(i).appKey == want) {
+                            target = i;
+                            break;
+                        }
                     }
                 }
-                // Some clients decorate their title dynamically; retain a
-                // contains fallback, but prefer the unambiguous exact match.
+                // Backward compatibility for surfaces launched before app keys were
+                // introduced; new launches always use the stable key.
                 if (target < 0 && !want.isEmpty()) {
                     for (int i = m_content.count() - 1; i >= 0; --i) {
                         if (!m_content.at(i).visible
@@ -849,6 +881,10 @@ public:
                     }
                 }
                 if (target >= 0) {
+                    fprintf(stderr,
+                            "imira-comp: restore want='%s' title='%s' key='%s'\n",
+                            qPrintable(want), qPrintable(m_content.at(target).title),
+                            qPrintable(m_content.at(target).appKey));
                     for (int i = 0; i < m_content.count(); ++i) {
                         if (i != target && m_content.at(i).visible) {
                             m_content[i].visible = false;
@@ -858,6 +894,9 @@ public:
                     m_content[target].visible = true;
                     m_content[target].item->setVisible(true);
                     m_content[target].item->setZ(m_nextContentZ++);
+                } else {
+                    fprintf(stderr, "imira-comp: restore miss want='%s'\n",
+                            qPrintable(want));
                 }
             }
         }
@@ -1030,6 +1069,7 @@ private:
     QQuickItem *m_contentRoot = nullptr;
     QVector<ContentWin> m_content;
     int m_nextContentZ = 10;
+    quint64 m_hideSerial = 0;
     qint64 m_cmdOff = 0;
 };
 
