@@ -477,13 +477,7 @@ public:
     Q_INVOKABLE void openSettings()
     {
         if (!m_currentApp.isEmpty()) {
-            FILE *tf = fopen("/tmp/imira-touch", "a");
-            if (tf) {
-                fprintf(tf, "H\n");
-                fclose(tf);
-            }
-            m_hiddenApp = m_currentApp;
-            m_currentApp.clear();
+            hideCurrent();
             emit currentAppChanged();
         }
         reloadConfig();
@@ -493,13 +487,7 @@ public:
     {
         if (m_currentApp.isEmpty())
             return;
-        FILE *tf = fopen("/tmp/imira-touch", "a");
-        if (tf) {
-            fprintf(tf, "H\n");
-            fclose(tf);
-        }
-        m_hiddenApp = m_currentApp;
-        m_currentApp.clear();
+        hideCurrent();
         fprintf(stderr, "carui: home (hid %s)\n",
                 m_hiddenApp.toUtf8().constData());
         emit currentAppChanged();
@@ -525,12 +513,9 @@ private:
         if (appId == m_currentApp)
             return;   // already on screen
         if (appId == m_hiddenApp) {
-            // still running, just hidden: bring it back
-            FILE *tf = fopen("/tmp/imira-touch", "a");
-            if (tf) {
-                fprintf(tf, "S\n");
-                fclose(tf);
-            }
+            // still running, just hidden: bring it back (by name — the
+            // compositor's hidden stack may hold several apps)
+            writeCmd(QStringLiteral("S ") + name);
             m_currentApp = appId;
             m_hiddenApp.clear();
             fprintf(stderr, "carui: showing %s\n",
@@ -541,10 +526,30 @@ private:
         fprintf(stderr, "carui: launching %s\n", name.toUtf8().constData());
         launchApp(exec);
         moveToFront(appId);
-        m_hiddenApp = m_currentApp;   // an app replaces the one on screen
+        if (!m_currentApp.isEmpty())
+            hideCurrent();   // the new app replaces the one on screen
         m_currentApp = appId;
         emit dockChanged();
         emit currentAppChanged();
+    }
+
+    void writeCmd(const QString &cmd)
+    {
+        FILE *tf = fopen("/tmp/imira-touch", "a");
+        if (tf) {
+            fprintf(tf, "%s\n", cmd.toUtf8().constData());
+            fclose(tf);
+        }
+    }
+
+    // H <name>: hide the app on screen (named so the compositor can tell
+    // stacked hidden apps apart)
+    void hideCurrent()
+    {
+        const AvailableApp *a = findAvailable(m_currentApp);
+        writeCmd(QStringLiteral("H ") + (a ? a->name : m_currentApp));
+        m_hiddenApp = m_currentApp;
+        m_currentApp.clear();
     }
 };
 

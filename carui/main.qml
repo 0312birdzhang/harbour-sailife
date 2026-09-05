@@ -72,15 +72,16 @@ Window {
             }
         }
 
-        // recently used apps (most recent first, dock shows the first 5)
+        // recently used apps (most recent first; 4 fit between the home
+        // button and the gear without overlapping)
         Repeater {
             model: {
                 var x = carController.dockApps
-                return x.length > 5 ? x.slice(0, 5) : x
+                return x.length > 4 ? x.slice(0, 4) : x
             }
             Rectangle {
                 x: 22
-                y: 220 + index * 96
+                y: 200 + index * 92
                 width: 96
                 height: 84
                 radius: 20

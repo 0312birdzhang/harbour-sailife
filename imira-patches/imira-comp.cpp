@@ -793,6 +793,10 @@ public:
         item->setScale(scale);
         item->setPosition(QPointF(kDockW + (aw - s.width()) / 2.0,
                                   (ah - s.height()) / 2.0));
+        fprintf(stderr,
+                "imira-comp: content fit '%s' surface=%dx%d scale=%.2f\n",
+                qPrintable(item->surface()->title()), s.width(), s.height(),
+                scale);
     }
 
     void pollCarlifeCmd()
@@ -811,8 +815,9 @@ public:
         const QList<QByteArray> lines = data.split('\n');
         for (const QByteArray &line : lines) {
             const QByteArray t = line.trimmed();
-            if (t == "H") {
-                // home: hide the app on screen
+            if (t == "H" || t.startsWith("H ")) {
+                // home: hide the app on screen (only one is ever visible;
+                // carui names it, but the topmost visible is the same thing)
                 for (int i = m_content.count() - 1; i >= 0; --i) {
                     if (m_content.at(i).visible) {
                         m_content[i].visible = false;
@@ -820,10 +825,15 @@ public:
                         break;
                     }
                 }
-            } else if (t == "S") {
-                // dock re-selected the hidden app: bring it back on top
+            } else if (t == "S" || t.startsWith("S ")) {
+                // dock re-selected a hidden app: bring IT back on top.
+                // carui passes the app name; empty falls back to the most
+                // recently hidden one.
+                const QString want = QString::fromUtf8(t.mid(1).trimmed());
                 for (int i = m_content.count() - 1; i >= 0; --i) {
-                    if (!m_content.at(i).visible) {
+                    if (!m_content.at(i).visible
+                        && (want.isEmpty()
+                            || m_content.at(i).title.contains(want))) {
                         m_content[i].visible = true;
                         m_content[i].item->setVisible(true);
                         m_content[i].item->setZ(m_nextContentZ++);
