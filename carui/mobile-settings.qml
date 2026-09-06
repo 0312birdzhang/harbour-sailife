@@ -3,6 +3,8 @@ import Sailfish.Silica 1.0
 
 ApplicationWindow {
     id: app
+    readonly property bool useChinese: Qt.locale().name.indexOf("zh") === 0
+    function textFor(english, chinese) { return useChinese ? chinese : english }
     allowedOrientations: Orientation.All
     cover: Component {
         CoverBackground {
@@ -20,7 +22,7 @@ ApplicationWindow {
                 }
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: carController.serviceRunning ? "Sailife · 运行中" : "Sailife · 已停止"
+                    text: carController.serviceRunning ? app.textFor("Sailife · Running", "Sailife · 运行中") : app.textFor("Sailife · Stopped", "Sailife · 已停止")
                     color: Theme.highlightColor
                     font.pixelSize: Theme.fontSizeSmall
                 }
@@ -42,9 +44,9 @@ ApplicationWindow {
             allowedOrientations: Orientation.All
             function toggle(appId) {
                 if (!carController.toggleApp(appId))
-                    saveNotice.text = "保存失败"
+                    saveNotice.text = app.textFor("Save failed", "保存失败")
                 else
-                    saveNotice.text = "已自动保存"
+                    saveNotice.text = app.textFor("Saved automatically", "已自动保存")
             }
 
             SilicaFlickable {
@@ -54,16 +56,16 @@ ApplicationWindow {
                     id: content
                     width: page.width
                     PageHeader { title: "Sailife" }
-                    SectionHeader { text: "投屏服务" }
+                    SectionHeader { text: app.textFor("Projection service", "投屏服务") }
                     TextSwitch {
                         width: parent.width
-                        text: carController.serviceRunning ? "Sailife 服务运行中" : "Sailife 服务已停止"
-                        description: "仅在连接车机投屏时开启，关闭可避免后台编码与合成耗电。"
+                        text: carController.serviceRunning ? app.textFor("Sailife service is running", "Sailife 服务运行中") : app.textFor("Sailife service is stopped", "Sailife 服务已停止")
+                        description: app.textFor("Enable only while connected to the car display. Turning it off avoids background encoding and compositor power use.", "仅在连接车机投屏时开启，关闭可避免后台编码与合成耗电。")
                         automaticCheck: false
                         checked: carController.serviceRunning
                         onClicked: carController.setServiceRunning(!checked)
                     }
-                    SectionHeader { text: "车机主页应用" }
+                    SectionHeader { text: app.textFor("Car display home apps", "车机主页应用") }
                     Label {
                         id: saveNotice
                         x: Theme.horizontalPageMargin
@@ -77,7 +79,7 @@ ApplicationWindow {
                         wrapMode: Text.WordWrap
                         color: Theme.secondaryColor
                         font.pixelSize: Theme.fontSizeSmall
-                        text: "直接勾选需要显示在车机主页的应用，修改会立即保存并自动更新。"
+                        text: app.textFor("Select the apps to show on the car display home screen. Changes are saved and applied immediately.", "直接勾选需要显示在车机主页的应用，修改会立即保存并自动更新。")
                     }
                     Repeater {
                         model: carController.availableApps()

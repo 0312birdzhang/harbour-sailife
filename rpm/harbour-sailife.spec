@@ -69,6 +69,14 @@ install -d %{buildroot}/var/lib/environment/usb-moded
 install -m 0644 rpm/sailife-usb-environment.conf %{buildroot}/var/lib/environment/usb-moded/sailife-aoa.conf
 
 %post
+# Sailfish Settings wraps unknown USB modes as "Mode %1". Give only our
+# private mode a stable, language-neutral product label.
+usb_settings_qml=/usr/share/jolla-settings/pages/usb/usb.qml
+if [ -f "$usb_settings_qml" ] && ! grep -q "Sailife custom USB mode" "$usb_settings_qml"; then
+    sed -i '/function translatedModeName(mode) {/a\        // Sailife custom USB mode\
+        if (mode === "sailife_mode") return "Sailife"' "$usb_settings_qml" || :
+fi
+
 # Guarded: during image builds there is no running systemd.
 systemctl stop carlife.service >/dev/null 2>&1 || :
 systemctl disable carlife.service >/dev/null 2>&1 || :
@@ -88,6 +96,10 @@ fi
 %preun
 # $1 = 0 on erase, >= 1 on upgrade — only stop the service when going away.
 if [ "$1" = "0" ]; then
+    usb_settings_qml=/usr/share/jolla-settings/pages/usb/usb.qml
+    if [ -f "$usb_settings_qml" ]; then
+        sed -i '/        \/\/ Sailife custom USB mode/,+1d' "$usb_settings_qml" || :
+    fi
     dbus-send --system --type=method_call --dest=com.meego.usb_moded /com/meego/usb_moded com.meego.usb_moded.set_whitelisted string:sailife_mode boolean:false >/dev/null 2>&1 || :
     systemctl stop sailife.service >/dev/null 2>&1 || :
     systemctl disable sailife.service >/dev/null 2>&1 || :

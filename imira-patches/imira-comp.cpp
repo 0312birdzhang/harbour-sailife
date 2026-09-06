@@ -809,9 +809,15 @@ public:
         item->setTransformOrigin(QQuickItem::Center);
         const qreal aw = m_width - kDockW;
         const qreal ah = m_height;
-        const qreal scale = qMin(aw / s.width(), ah / s.height());
+        // Slight left overscan hides application-side edge drawers which are
+        // normally kept just off the phone screen. Fit against a canvas that
+        // is wider by the crop amount, then clip it at the real content area;
+        // this keeps the right edge flush instead of leaving a black strip.
+        const qreal fitWidth = aw + kContentCropLeft;
+        const qreal scale = qMin(fitWidth / s.width(), ah / s.height());
         item->setScale(scale);
-        item->setPosition(QPointF((aw - s.width()) / 2.0,
+        item->setPosition(QPointF((fitWidth - s.width()) / 2.0
+                                      - kContentCropLeft,
                                   (ah - s.height()) / 2.0));
         fprintf(stderr,
                 "imira-comp: content fit '%s' surface=%dx%d scale=%.2f\n",
@@ -1065,6 +1071,7 @@ private:
 
     // CarLife shell/content state (see contentItemAt / pollCarlifeCmd)
     static const int kDockW = 140;   // carui's own dock width on the left
+    static const int kContentCropLeft = 28;
     QWaylandSurfaceItem *m_shellItem = nullptr;
     QQuickItem *m_contentRoot = nullptr;
     QVector<ContentWin> m_content;

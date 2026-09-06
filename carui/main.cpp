@@ -192,6 +192,13 @@ static void scanAvailableApps()
                 continue;
             if (hidden || name.isEmpty())
                 continue;
+            // Android App Support applications are rendered by the container's
+            // SurfaceFlinger through Jolla's private alien_surface protocol.
+            // imira cannot host those surfaces yet, so do not offer launchers
+            // that would only open on the phone or interrupt projection.
+            if (exec.startsWith(QStringLiteral("apkd-launcher "))
+                    || exec == QLatin1String("apkd-launcher"))
+                continue;
             AvailableApp a;
             a.id = fn.left(fn.size() - 8);
             // The phone-side configurator is not a projected app. Listing it

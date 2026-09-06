@@ -1,6 +1,9 @@
 #!/bin/sh
 pkill -f carlife_proto 2>/dev/null
-pkill -f carlife-capture 2>/dev/null
+# A capture process blocked in a FIFO write does not exit on SIGTERM.
+for pid in $(pgrep -f '^/opt/carlife/carlife-capture '); do
+    kill -9 "$pid" 2>/dev/null || :
+done
 pkill -f imira-comp 2>/dev/null
 pkill -f audio_bridge.sh 2>/dev/null
 # Only stop the projected launcher. The Sailife phone UI uses the same
