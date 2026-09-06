@@ -8,7 +8,7 @@
 Name:       harbour-sailife
 Summary:    Sailife in-vehicle projection for Sailfish OS
 Version:    0.1.0
-Release:    3
+Release:    4
 License:    GPL-3.0-or-later
 Source0:    %{name}-%{version}.tar.bz2
 BuildArch:  aarch64
@@ -160,6 +160,9 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_sysconfdir}/usb-moded/90-sailife.ini
 /var/lib/environment/usb-moded/sailife-aoa.conf
 %changelog
+* Sun Sep 06 2026 harbour-sailife 0.1.0-4
+- Allow slower head-unit handshakes and fix delayed service shutdown.
+
 * Sun Sep 06 2026 harbour-sailife 0.1.0-3
 - Debounce AOA USB re-enumeration so projection is not stopped mid-handshake.
 

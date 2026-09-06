@@ -9,7 +9,7 @@
 set -e
 NAME=harbour-sailife
 VERSION=0.1.0
-RELEASE=3
+RELEASE=4
 REPO=/parentroot/mnt/d/code/sfos-carlife/harbour-sailife
 WORK=/tmp/$NAME-build
 STAGE=$WORK/$NAME-$VERSION

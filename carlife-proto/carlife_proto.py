@@ -435,7 +435,7 @@ def enter_accessory_mode():
     if gadget_vid() != VID_ACCESSORY or gadget_pid() != PID_DEFAULT:
         set_pid_and_bind(PID_DEFAULT)
     ok = False
-    deadline = time.time() + 30
+    deadline = time.time() + 45
     while s and time.time() < deadline:
         r, _, _ = select.select([s], [], [], 1)
         if r and b'ACCESSORY=START' in s.recv(65536):
@@ -444,7 +444,7 @@ def enter_accessory_mode():
     if s:
         s.close()
     if not ok:
-        print('[%s] AOA handshake: no START within 30s' % ts(), flush=True)
+        print('[%s] AOA handshake: no START within 45s' % ts(), flush=True)
         if gadget_pid() != PID_ACCESSORY:
             set_pid_and_bind(PID_ACCESSORY)   # restore for the next attempt
         return False
@@ -769,10 +769,10 @@ def nudge_watchdog(stop):
     while not stop.is_set():
         time.sleep(1)
         if g_connected and not g_hu_seen and not g_nudged \
-                and time.time() - g_link_open_ts > 20:
+                and time.time() - g_link_open_ts > 30:
             g_nudged = True
             g_nudge_ts = time.time()
-            print('[%s] no HU session for 20s, nudging with UDC rebind' % ts(), flush=True)
+            print('[%s] no HU session for 30s, nudging with UDC rebind' % ts(), flush=True)
             rebind_udc()
             # the open fd dies with the unbind; the main loop's read fails
             # and runs its normal recovery path
