@@ -8,7 +8,7 @@
 Name:       harbour-sailife
 Summary:    Sailife in-vehicle projection for Sailfish OS
 Version:    0.1.0
-Release:    1
+Release:    2
 License:    GPL-3.0-or-later
 Source0:    %{name}-%{version}.tar.bz2
 BuildArch:  aarch64
@@ -87,8 +87,14 @@ systemctl disable sailife.service >/dev/null 2>&1 || :
 systemctl stop sailife.service >/dev/null 2>&1 || :
 pkill -x pulseaudio >/dev/null 2>&1 || :
 systemctl restart usb-moded.service >/dev/null 2>&1 || :
-sleep 1
-dbus-send --system --type=method_call --dest=com.meego.usb_moded /com/meego/usb_moded com.meego.usb_moded.set_whitelisted string:sailife_mode boolean:true >/dev/null 2>&1 || :
+# usb-moded may need several seconds to return to D-Bus on slower devices.
+# Do not silently lose the persistent whitelist entry during that window.
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if dbus-send --system --print-reply --dest=com.meego.usb_moded /com/meego/usb_moded com.meego.usb_moded.set_whitelisted string:sailife_mode boolean:true >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
 if dbus-send --system --print-reply --dest=com.meego.usb_moded /com/meego/usb_moded com.meego.usb_moded.mode_request 2>/dev/null | grep -q 'sailife_mode'; then
     systemctl start sailife.service >/dev/null 2>&1 || :
 fi
@@ -139,6 +145,9 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_sysconfdir}/usb-moded/90-sailife.ini
 /var/lib/environment/usb-moded/sailife-aoa.conf
 %changelog
+* Sun Sep 06 2026 harbour-sailife 0.1.0-2
+- Persist the Sailife USB mode after installation and device restart.
+
 * Thu Sep 04 2026 harbour-sailife 0.1.0-1
 - Initial RPM: vehicle projection daemon with staged USB reconnect, virtual
   compositor, launcher UI, x264 capture, boot-autostart systemd service.
