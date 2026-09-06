@@ -6,7 +6,9 @@ After=multi-user.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+SuccessExitStatus=SIGTERM 143
 ExecStart=/opt/carlife/start_convergence.sh
+ExecStop=/opt/carlife/stop_convergence.sh
 # Default KillMode=control-group SIGTERMs every process the script forked,
 # so `systemctl stop carlife` tears the whole chain down.
 

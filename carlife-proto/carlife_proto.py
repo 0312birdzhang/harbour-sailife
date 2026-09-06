@@ -1,6 +1,56 @@
 import os, struct, time, sys, select, threading, fcntl, ctypes, socket
 
-DEV = '/dev/usb/usb_accessory'
+def first_existing(paths):
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return paths[0]
+
+def find_usb_gadget():
+    override = os.environ.get('SAILIFE_GADGET')
+    if override and os.path.isdir(override):
+        return override
+    root = first_existing(('/config/usb_gadget',
+                           '/sys/kernel/config/usb_gadget'))
+    try:
+        gadgets = [os.path.join(root, name) for name in sorted(os.listdir(root))
+                   if os.path.isdir(os.path.join(root, name))]
+    except OSError:
+        gadgets = []
+    for gadget in gadgets:
+        try:
+            with open(gadget + '/UDC') as f:
+                if f.read().strip():
+                    return gadget
+        except OSError:
+            pass
+    for gadget in gadgets:
+        try:
+            if any('accessory' in name.lower()
+                   for name in os.listdir(gadget + '/functions')):
+                return gadget
+        except OSError:
+            pass
+    preferred = os.path.join(root, 'g1')
+    return preferred if os.path.isdir(preferred) else (gadgets[0] if gadgets else preferred)
+
+def find_udc(gadget):
+    override = os.environ.get('SAILIFE_UDC')
+    if override:
+        return override
+    try:
+        with open(gadget + '/UDC') as f:
+            bound = f.read().strip()
+            if bound:
+                return bound
+    except OSError:
+        pass
+    try:
+        return sorted(os.listdir('/sys/class/udc'))[0]
+    except (OSError, IndexError):
+        return 'a600000.dwc3'
+
+DEV = first_existing(('/dev/usb/usb_accessory', '/dev/usb_accessory'))
 FIFO = '/tmp/cast.h264'
 AUDIO_FIFO = '/tmp/sailife-audio.pcm'
 
@@ -9,10 +59,11 @@ AUDIO_FIFO = '/tmp/sailife-audio.pcm'
 # often left dead: writes fail with ENODEV ("No such device") and only a
 # fresh USB enumeration clears the stale state. We therefore recover by
 # re-binding the UDC, worst case redoing the whole AOA handshake.
-GADGET = '/sys/kernel/config/usb_gadget/g1'
-UDC_NAME = 'a600000.dwc3'
+GADGET = find_usb_gadget()
+UDC_NAME = find_udc(GADGET)
 PID_DEFAULT = '0x4ee1'      # pre-AOA PID; the HU sends 0x51/0x52/0x53 to this
 PID_ACCESSORY = '0x2d00'    # AOA data mode
+VID_ACCESSORY = '0x18d1'    # Google VID required for Android Open Accessory
 
 # head unit video size
 HU_W = 1920
@@ -329,6 +380,13 @@ def gadget_pid():
     except OSError:
         return 'unknown'
 
+def gadget_vid():
+    try:
+        with open(GADGET + '/idVendor') as f:
+            return f.read().strip()
+    except OSError:
+        return 'unknown'
+
 def write_sys(path, val):
     try:
         with open(path, 'w') as f:
@@ -342,6 +400,7 @@ def set_pid_and_bind(pid):
     """configfs attributes only accept writes while the UDC is unbound."""
     write_sys(GADGET + '/UDC', '\n')
     time.sleep(0.2)
+    write_sys(GADGET + '/idVendor', VID_ACCESSORY)
     write_sys(GADGET + '/idProduct', pid)
     time.sleep(0.2)
     write_sys(GADGET + '/UDC', UDC_NAME + '\n')
@@ -371,9 +430,9 @@ def enter_accessory_mode():
     start requests (kernel then broadcasts ACCESSORY=START), switch to the
     accessory PID — same sequence as aoa_manager.py. Bind the uevent socket
     BEFORE switching PID so the START event cannot slip through."""
-    print('[%s] AOA handshake: PID -> %s, waiting for ACCESSORY=START' % (ts(), PID_DEFAULT), flush=True)
+    print('[%s] AOA handshake: VID:PID -> %s:%s, waiting for ACCESSORY=START' % (ts(), VID_ACCESSORY, PID_DEFAULT), flush=True)
     s = _netlink_uevent_socket()
-    if gadget_pid() != PID_DEFAULT:
+    if gadget_vid() != VID_ACCESSORY or gadget_pid() != PID_DEFAULT:
         set_pid_and_bind(PID_DEFAULT)
     ok = False
     deadline = time.time() + 30
@@ -445,7 +504,7 @@ def acquire_link(force_level=None):
         enter_accessory_mode()
     elif g_recover_level == 1:
         rebind_udc()
-    elif gadget_pid() == PID_DEFAULT:
+    elif gadget_vid() != VID_ACCESSORY or gadget_pid() != PID_ACCESSORY:
         # Fresh boot (or first plug): nobody has switched us into accessory
         # mode yet. Run the AOA dance ourselves — the chain is otherwise
         # self-contained, there is no external aoa_manager service.

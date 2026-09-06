@@ -1,4 +1,6 @@
 #include <QGuiApplication>
+#include <QTranslator>
+#include <QLocale>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -97,6 +99,8 @@ static bool parseDesktopFile(const QString &path, QString *name, QString *exec,
     *exec = QString();
     *icon = QString();
     *hidden = false;
+    QString logicalId;
+    QString translationCatalog;
     while (!f.atEnd()) {
         QString line = QString::fromUtf8(f.readLine()).trimmed();
         int eq = line.indexOf(QLatin1Char('='));
@@ -107,6 +111,10 @@ static bool parseDesktopFile(const QString &path, QString *name, QString *exec,
         QString val = line.mid(eq + 1).trimmed();
         if (key == QStringLiteral("Name"))
             *name = val;
+        else if (key == QStringLiteral("X-MeeGo-Logical-Id"))
+            logicalId = val;
+        else if (key == QStringLiteral("X-MeeGo-Translation-Catalog"))
+            translationCatalog = val;
         else if (key == QStringLiteral("Exec") && exec->isEmpty())
             *exec = val;
         else if (key == QStringLiteral("Icon") && icon->isEmpty())
@@ -114,6 +122,19 @@ static bool parseDesktopFile(const QString &path, QString *name, QString *exec,
         else if ((key == QStringLiteral("NoDisplay")
                   || key == QStringLiteral("Hidden")) && val == QStringLiteral("true"))
             *hidden = true;
+    }
+    if (!logicalId.isEmpty() && !translationCatalog.isEmpty()) {
+        QTranslator translator;
+        const QString locale = QLocale::system().name();
+        const QString file = QStringLiteral("/usr/share/translations/")
+                           + translationCatalog + QLatin1Char('-') + locale
+                           + QStringLiteral(".qm");
+        if (translator.load(file)) {
+            const QByteArray id = logicalId.toUtf8();
+            const QString localized = translator.translate("", id.constData());
+            if (!localized.isEmpty())
+                *name = localized;
+        }
     }
     return !exec->isEmpty();
 }
@@ -627,8 +648,27 @@ private:
     }
 };
 
+static void inheritSystemLocale()
+{
+    if (!qgetenv("LANG").isEmpty())
+        return;
+    QFile f(QStringLiteral("/etc/locale.conf"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (line.startsWith("LANG=")) {
+            const QByteArray locale = line.mid(5);
+            qputenv("LANG", locale);
+            qputenv("LC_MESSAGES", locale);
+            break;
+        }
+    }
+}
+
 Q_DECL_EXPORT int main(int argc, char **argv)
 {
+    inheritSystemLocale();
     QGuiApplication app(argc, argv);
     const bool mobileSettings = argc > 1
         && QString::fromLocal8Bit(argv[1]).endsWith(

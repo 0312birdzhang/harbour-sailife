@@ -1,22 +1,65 @@
 import socket, os, select, time, subprocess, sys
 
-GADGET = '/sys/kernel/config/usb_gadget'
-UDC = 'a600000.dwc3'
-DEV = '/dev/usb/usb_accessory'
+def find_usb_gadget():
+    override = os.environ.get('SAILIFE_GADGET')
+    if override and os.path.isdir(override):
+        return override
+    root = '/config/usb_gadget' if os.path.isdir('/config/usb_gadget') \
+        else '/sys/kernel/config/usb_gadget'
+    try:
+        gadgets = [os.path.join(root, name) for name in sorted(os.listdir(root))
+                   if os.path.isdir(os.path.join(root, name))]
+    except OSError:
+        gadgets = []
+    for gadget in gadgets:
+        try:
+            if open(gadget + '/UDC').read().strip():
+                return gadget
+        except OSError:
+            pass
+    for gadget in gadgets:
+        try:
+            if any('accessory' in name.lower()
+                   for name in os.listdir(gadget + '/functions')):
+                return gadget
+        except OSError:
+            pass
+    preferred = os.path.join(root, 'g1')
+    return preferred if os.path.isdir(preferred) else (gadgets[0] if gadgets else preferred)
+
+def find_udc(gadget):
+    override = os.environ.get('SAILIFE_UDC')
+    if override:
+        return override
+    try:
+        bound = open(gadget + '/UDC').read().strip()
+        if bound:
+            return bound
+    except OSError:
+        pass
+    try:
+        return sorted(os.listdir('/sys/class/udc'))[0]
+    except (OSError, IndexError):
+        return 'a600000.dwc3'
+
+GADGET = find_usb_gadget()
+UDC = find_udc(GADGET)
+DEV = '/dev/usb/usb_accessory' if os.path.exists('/dev/usb/usb_accessory') \
+    else '/dev/usb_accessory'
 
 def run(cmd):
     subprocess.run(cmd, shell=True)
 
 def switch_to_accessory():
     print('SWITCH idProduct -> 0x2d00', flush=True)
-    run("echo '' > %s/g1/UDC" % GADGET)
+    run("echo '' > %s/UDC" % GADGET)
     time.sleep(0.1)
-    run("echo 0x2d00 > %s/g1/idProduct" % GADGET)
+    run("echo 0x2d00 > %s/idProduct" % GADGET)
     time.sleep(0.1)
-    run("echo %s > %s/g1/UDC" % (UDC, GADGET))
+    run("echo %s > %s/UDC" % (UDC, GADGET))
     time.sleep(0.1)
     st = open('/sys/class/udc/%s/state' % UDC).read().strip()
-    pid = open('%s/g1/idProduct' % GADGET).read().strip()
+    pid = open('%s/idProduct' % GADGET).read().strip()
     print('after switch: UDC=%s PID=%s' % (st, pid), flush=True)
 
 # open accessory data channel early (works whenever function is bound)
