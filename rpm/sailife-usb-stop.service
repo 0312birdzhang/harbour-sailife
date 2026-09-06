@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop Sailife after USB disconnect debounce
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl stop sailife.service

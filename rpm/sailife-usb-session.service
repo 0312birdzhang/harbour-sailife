@@ -1,0 +1,10 @@
+[Unit]
+Description=Sailife USB session supervisor
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/carlife/usb_session_start.sh
+ExecStop=/opt/carlife/usb_session_stop.sh
+# The projection processes belong to sailife.service, not this helper.
+KillMode=none

@@ -8,7 +8,7 @@
 Name:       harbour-sailife
 Summary:    Sailife in-vehicle projection for Sailfish OS
 Version:    0.1.0
-Release:    2
+Release:    3
 License:    GPL-3.0-or-later
 Source0:    %{name}-%{version}.tar.bz2
 BuildArch:  aarch64
@@ -51,8 +51,15 @@ install -m 0644 carui/carui-apps.conf           %{buildroot}/opt/carlife/carui-a
 install -m 0755 scripts/start_convergence.sh    %{buildroot}/opt/carlife/start_convergence.sh
 install -m 0755 scripts/stop_convergence.sh     %{buildroot}/opt/carlife/stop_convergence.sh
 install -m 0755 scripts/audio_bridge.sh         %{buildroot}/opt/carlife/audio_bridge.sh
+install -m 0755 scripts/usb_session_start.sh    %{buildroot}/opt/carlife/usb_session_start.sh
+install -m 0755 scripts/usb_session_stop.sh     %{buildroot}/opt/carlife/usb_session_stop.sh
 install -d %{buildroot}%{_sysconfdir}/systemd/system
 install -m 0644 rpm/sailife.service              %{buildroot}%{_sysconfdir}/systemd/system/sailife.service
+install -m 0644 rpm/sailife-usb-session.service  %{buildroot}%{_sysconfdir}/systemd/system/sailife-usb-session.service
+install -m 0644 rpm/sailife-usb-stop.service     %{buildroot}%{_sysconfdir}/systemd/system/sailife-usb-stop.service
+install -m 0644 rpm/sailife-usb-stop.timer       %{buildroot}%{_sysconfdir}/systemd/system/sailife-usb-stop.timer
+install -d %{buildroot}%{_sysconfdir}/systemd/system/usb-moded.service.d
+install -m 0644 rpm/sailife-usb-moded.conf       %{buildroot}%{_sysconfdir}/systemd/system/usb-moded.service.d/90-sailife.conf
 install -d %{buildroot}%{_datadir}/applications
 install -m 0644 rpm/harbour-sailife.desktop     %{buildroot}%{_datadir}/applications/harbour-sailife.desktop
 install -d %{buildroot}%{_datadir}/icons/hicolor/172x172/apps
@@ -96,7 +103,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
 done
 if dbus-send --system --print-reply --dest=com.meego.usb_moded /com/meego/usb_moded com.meego.usb_moded.mode_request 2>/dev/null | grep -q 'sailife_mode'; then
-    systemctl start sailife.service >/dev/null 2>&1 || :
+    systemctl start sailife-usb-session.service >/dev/null 2>&1 || :
 fi
 
 %preun
@@ -107,6 +114,8 @@ if [ "$1" = "0" ]; then
         sed -i '/        \/\/ Sailife custom USB mode/,+1d' "$usb_settings_qml" || :
     fi
     dbus-send --system --type=method_call --dest=com.meego.usb_moded /com/meego/usb_moded com.meego.usb_moded.set_whitelisted string:sailife_mode boolean:false >/dev/null 2>&1 || :
+    systemctl stop sailife-usb-session.service sailife-usb-stop.timer >/dev/null 2>&1 || :
+    systemctl reset-failed sailife-usb-stop.service >/dev/null 2>&1 || :
     systemctl stop sailife.service >/dev/null 2>&1 || :
     systemctl disable sailife.service >/dev/null 2>&1 || :
 fi
@@ -133,7 +142,13 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 /opt/carlife/start_convergence.sh
 /opt/carlife/stop_convergence.sh
 /opt/carlife/audio_bridge.sh
+/opt/carlife/usb_session_start.sh
+/opt/carlife/usb_session_stop.sh
 %{_sysconfdir}/systemd/system/sailife.service
+%{_sysconfdir}/systemd/system/sailife-usb-session.service
+%{_sysconfdir}/systemd/system/sailife-usb-stop.service
+%{_sysconfdir}/systemd/system/sailife-usb-stop.timer
+%{_sysconfdir}/systemd/system/usb-moded.service.d/90-sailife.conf
 %{_datadir}/applications/harbour-sailife.desktop
 %{_datadir}/icons/hicolor/172x172/apps/harbour-sailife.png
 %{_datadir}/polkit-1/rules.d/50-sailife.rules
@@ -145,6 +160,9 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_sysconfdir}/usb-moded/90-sailife.ini
 /var/lib/environment/usb-moded/sailife-aoa.conf
 %changelog
+* Sun Sep 06 2026 harbour-sailife 0.1.0-3
+- Debounce AOA USB re-enumeration so projection is not stopped mid-handshake.
+
 * Sun Sep 06 2026 harbour-sailife 0.1.0-2
 - Persist the Sailife USB mode after installation and device restart.
 

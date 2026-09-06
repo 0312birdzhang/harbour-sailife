@@ -1,0 +1,7 @@
+[Unit]
+Description=Debounce Sailife USB disconnect
+
+[Timer]
+OnActiveSec=8s
+AccuracySec=1s
+Unit=sailife-usb-stop.service
