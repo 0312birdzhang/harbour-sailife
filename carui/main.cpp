@@ -170,13 +170,15 @@ static QString extractBinary(const QString &exec)
     return binary;
 }
 
-// System desktops first, user-local ones (flatpak/AppSupport) override.
+// System desktops only. User-local ones (~/.local/share/applications)
+// include Android App Support / flatpak autogen launchers (e.g. QQ) whose
+// rendering goes through the Android container's SurfaceFlinger — imira
+// cannot host those surfaces, so skip the whole directory.
 static void scanAvailableApps()
 {
     g_available.clear();
     const QStringList dirs = {
         QStringLiteral("/usr/share/applications"),
-        QDir::home().filePath(QStringLiteral(".local/share/applications")),
     };
     for (const QString &dn : dirs) {
         QDir dir(dn);
