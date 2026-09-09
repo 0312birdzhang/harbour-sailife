@@ -429,18 +429,30 @@ def enter_accessory_mode():
     """Full AOA dance: default PID, wait for the HU to send the accessory
     start requests (kernel then broadcasts ACCESSORY=START), switch to the
     accessory PID — same sequence as aoa_manager.py. Bind the uevent socket
-    BEFORE switching PID so the START event cannot slip through."""
+    BEFORE switching PID so the START event cannot slip through.
+
+    The START broadcast is one-shot: if the daemon starts late (usb-moded
+    appsync post fires ~350ms after enumeration) the HU may already have
+    sent 0x51/0x52/53 and gone quiet showing "unsupported device". So wait
+    in 15s rounds and re-enumerate at the default PID between rounds — the
+    re-enumeration makes the HU redo GetProtocol and re-broadcast START."""
     print('[%s] AOA handshake: VID:PID -> %s:%s, waiting for ACCESSORY=START' % (ts(), VID_ACCESSORY, PID_DEFAULT), flush=True)
     s = _netlink_uevent_socket()
     if gadget_vid() != VID_ACCESSORY or gadget_pid() != PID_DEFAULT:
         set_pid_and_bind(PID_DEFAULT)
     ok = False
-    deadline = time.time() + 45
-    while s and time.time() < deadline:
-        r, _, _ = select.select([s], [], [], 1)
-        if r and b'ACCESSORY=START' in s.recv(65536):
-            ok = True
+    for rnd in range(3):
+        deadline = time.time() + 15
+        while s and time.time() < deadline:
+            r, _, _ = select.select([s], [], [], 1)
+            if r and b'ACCESSORY=START' in s.recv(65536):
+                ok = True
+                break
+        if ok:
             break
+        if rnd < 2:
+            print('[%s] AOA handshake: no START in round %d, re-enumerating to retrigger HU' % (ts(), rnd + 1), flush=True)
+            rebind_udc()   # PID stays default, HU re-sends 51/52/53
     if s:
         s.close()
     if not ok:
@@ -722,6 +734,8 @@ def audio_loop_fifo(stop):
         return
     print('audio FIFO source: %s' % AUDIO_FIFO, flush=True)
     buf = b''
+    n_sent = 0
+    t_log = 0.0
     while not stop.is_set():
         try:
             data = fifo.read(4096)
@@ -741,6 +755,11 @@ def audio_loop_fifo(stop):
                               export_video(MSG_MEDIA_DATA, pcm)):
                 buf = b''
                 break
+            n_sent += 1
+            now = time.time()
+            if now - t_log > 30:
+                t_log = now
+                print('[%s] audio MEDIA_DATA sent n=%d' % (ts(), n_sent), flush=True)
     fifo.close()
 
 vis_w, vis_h = 1920, 720

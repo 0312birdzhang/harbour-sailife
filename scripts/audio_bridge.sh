@@ -35,16 +35,25 @@ cleanup()
 trap cleanup EXIT INT TERM
 
 # New playback defaults to the cast sink (tablet goes silent, head unit
-# hears it); existing streams are moved in the loop below.
-pactl set-default-sink sailife_cast 2>/dev/null
+# hears it); existing streams are moved in the loop below. Use the ACTUAL
+# sink name (suffix-stripped monitor): with a stale leftover the sink may be
+# sailife_cast.2 and the bare name would miss.
+sink=${monitor%.monitor}
+pactl set-default-sink "$sink" 2>/dev/null
 
-parec --device="$monitor" --format=s16le --rate=48000 \
+# application.name must match rpm/sailife-xpolicy.conf ("sailife-audio") so
+# the stream lands in the nopolicy group. A bare parec advertises
+# application.name "parec", matches nothing, and module-policy-enforcement
+# re-routes the capture onto the microphone (cf. harbour-imira's
+# audiocapture.cpp monitor check).
+parec --device="$monitor" --property=application.name=sailife-audio \
+    --format=s16le --rate=48000 \
     --channels=2 > /tmp/sailife-audio.pcm &
 capture_pid=$!
 
 while kill -0 "$capture_pid" 2>/dev/null; do
-    pactl list short sink-inputs 2>/dev/null | while read -r input sink rest; do
-        [ -n "$input" ] && pactl move-sink-input "$input" sailife_cast \
+    pactl list short sink-inputs 2>/dev/null | while read -r input s rest; do
+        [ -n "$input" ] && pactl move-sink-input "$input" "$sink" \
             >/dev/null 2>&1
     done
     sleep 1

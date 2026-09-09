@@ -8,7 +8,7 @@
 Name:       harbour-sailife
 Summary:    Sailife in-vehicle projection for Sailfish OS
 Version:    0.1.0
-Release:    6
+Release:    7
 License:    GPL-3.0-or-later
 Source0:    %{name}-%{version}.tar.bz2
 BuildArch:  aarch64
@@ -53,6 +53,7 @@ install -m 0755 scripts/stop_convergence.sh     %{buildroot}/opt/carlife/stop_co
 install -m 0755 scripts/audio_bridge.sh         %{buildroot}/opt/carlife/audio_bridge.sh
 install -m 0755 scripts/usb_session_start.sh    %{buildroot}/opt/carlife/usb_session_start.sh
 install -m 0755 scripts/usb_session_stop.sh     %{buildroot}/opt/carlife/usb_session_stop.sh
+install -m 0755 scripts/usb_session_maybe_stop.sh %{buildroot}/opt/carlife/usb_session_maybe_stop.sh
 install -m 0755 scripts/usb_mode_restore.sh     %{buildroot}/opt/carlife/usb_mode_restore.sh
 install -d %{buildroot}%{_sysconfdir}/systemd/system
 install -m 0644 rpm/sailife.service              %{buildroot}%{_sysconfdir}/systemd/system/sailife.service
@@ -144,6 +145,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 /opt/carlife/audio_bridge.sh
 /opt/carlife/usb_session_start.sh
 /opt/carlife/usb_session_stop.sh
+/opt/carlife/usb_session_maybe_stop.sh
 /opt/carlife/usb_mode_restore.sh
 %{_sysconfdir}/systemd/system/sailife.service
 %{_sysconfdir}/systemd/system/sailife-usb-session.service
@@ -163,6 +165,15 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_sysconfdir}/usb-moded/90-sailife.ini
 /var/lib/environment/usb-moded/sailife-aoa.conf
 %changelog
+* Wed Sep 09 2026 harbour-sailife 0.1.0-7
+- Audio: tag parec with application.name=sailife-audio so the xpolicy
+  nopolicy rule matches (was re-routed to the microphone); resolve the real
+  null-sink name when a stale instance adds a numeric suffix.
+- USB: AOA handshake retries in 15s rounds with re-enumeration so a missed
+  one-shot ACCESSORY=START no longer ends in "unsupported device".
+- USB: stop-timer service defers while the link is alive instead of killing
+  sailife.service mid-handshake (auto-start chain survives plug-in).
+
 * Tue Sep 08 2026 harbour-sailife 0.1.0-6
 - Use an old-systemd-compatible timer to monitor and repair USB mode state.
 

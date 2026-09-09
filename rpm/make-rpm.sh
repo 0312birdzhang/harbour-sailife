@@ -9,7 +9,7 @@
 set -e
 NAME=harbour-sailife
 VERSION=0.1.0
-RELEASE=4
+RELEASE=7
 REPO=/parentroot/mnt/d/code/sfos-carlife/harbour-sailife
 WORK=/tmp/$NAME-build
 STAGE=$WORK/$NAME-$VERSION
@@ -21,7 +21,7 @@ mkdir -p "$STAGE/rpm/payload" "$STAGE/carlife-proto" "$STAGE/carui" "$STAGE/scri
 # exactly the set the spec installs (plus the carui sources for reference)
 cp "$REPO"/carlife-proto/carlife_proto.py "$REPO"/carlife-proto/aoa_manager.py "$STAGE/carlife-proto/"
 cp "$REPO"/carui/main.cpp "$REPO"/carui/main.qml "$REPO"/carui/mobile-settings.qml "$REPO"/carui/harbour-sailife.png "$REPO"/carui/carui.pro "$REPO"/carui/carui-apps.conf "$STAGE/carui/"
-cp "$REPO"/scripts/start_convergence.sh "$REPO"/scripts/stop_convergence.sh "$REPO"/scripts/audio_bridge.sh "$REPO"/scripts/usb_session_start.sh "$REPO"/scripts/usb_session_stop.sh "$REPO"/scripts/usb_mode_restore.sh "$STAGE/scripts/"
+cp "$REPO"/scripts/start_convergence.sh "$REPO"/scripts/stop_convergence.sh "$REPO"/scripts/audio_bridge.sh "$REPO"/scripts/usb_session_start.sh "$REPO"/scripts/usb_session_stop.sh "$REPO"/scripts/usb_session_maybe_stop.sh "$REPO"/scripts/usb_mode_restore.sh "$STAGE/scripts/"
 cp "$REPO"/rpm/harbour-sailife.spec "$REPO"/rpm/sailife.service "$REPO"/rpm/harbour-sailife.desktop "$REPO"/rpm/50-sailife.rules "$REPO"/rpm/sailife-xpolicy.conf "$REPO"/rpm/sailife-usb-mode.ini "$REPO"/rpm/sailife-usb-appsync.ini "$REPO"/rpm/90-sailife-usb.ini "$REPO"/rpm/sailife-usb-environment.conf "$REPO"/rpm/sailife-usb-session.service "$REPO"/rpm/sailife-usb-stop.service "$REPO"/rpm/sailife-usb-stop.timer "$REPO"/rpm/sailife-usb-restore.service "$REPO"/rpm/sailife-usb-restore.timer "$REPO"/rpm/sailife-usb-moded.conf "$STAGE/rpm/"
 cp "$REPO"/rpm/payload/imira-comp "$REPO"/rpm/payload/carui "$REPO"/rpm/payload/carlife-capture "$STAGE/rpm/payload/"
 

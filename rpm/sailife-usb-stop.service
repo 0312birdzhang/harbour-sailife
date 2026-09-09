@@ -3,4 +3,4 @@ Description=Stop Sailife after USB disconnect debounce
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/systemctl stop sailife.service
+ExecStart=/opt/carlife/usb_session_maybe_stop.sh
