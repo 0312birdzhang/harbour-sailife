@@ -111,63 +111,72 @@ Window {
 
     // ---------- content area: home grid ----------
     // hidden while an app is on screen: the app surface may not fill its
-    // item exactly, and the grid must never show through behind it
-    Grid {
-        id: grid
+    // item exactly, and the grid must never show through behind it.
+    // Tiles are fixed-size; extra rows scroll vertically.
+    Flickable {
+        id: gridFlick
         visible: carController.currentApp === ""
         x: 160
         width: parent.width - x - 20
-        columns: 5
-        spacing: 20
-        property int tileCount: carController.tiles.length
-        property int rowCount: Math.max(1, Math.ceil(tileCount / columns))
-        property real tileHeight: Math.min(
-            260, (root.height - 40 - (rowCount - 1) * spacing) / rowCount)
-        property real tileWidth: (width - (columns - 1) * spacing) / columns
-        height: rowCount * tileHeight + (rowCount - 1) * spacing
-        y: Math.max(20, (parent.height - height) / 2)
+        height: parent.height
+        contentWidth: width
+        contentHeight: grid.height + 40
+        flickableDirection: Flickable.VerticalFlick
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
 
-        Repeater {
-            model: carController.tiles
-            Rectangle {
-                width: grid.tileWidth
-                height: grid.tileHeight
-                radius: 24
-                color: tileMA.pressed ? "#1e2c47" : "#131a29"
-                Image {
-                    anchors.top: parent.top
-                    anchors.topMargin: Math.max(14, parent.height * 0.13)
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(96, parent.height * 0.42)
-                    height: width
-                    fillMode: Image.PreserveAspectFit
-                    source: modelData.icon !== "" ? "file://" + modelData.icon : ""
-                    visible: modelData.icon !== ""
-                }
-                Text {
-                    anchors.top: parent.top
-                    anchors.topMargin: Math.max(14, parent.height * 0.14)
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    font.pixelSize: Math.min(84, parent.height * 0.38)
-                    visible: modelData.icon === ""
-                    text: root.categoryIcon(modelData.category)
-                }
-                Text {
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 22
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: parent.width - 24
-                    horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
-                    color: "#ffffff"
-                    font.pixelSize: 28
-                    font.bold: true
-                    text: modelData.name
-                }
-                MouseArea {
-                    id: tileMA
-                    anchors.fill: parent
-                    onClicked: carController.tileClicked(index)
+        Grid {
+            id: grid
+            x: 0
+            y: 20
+            width: parent.width
+            columns: 5
+            spacing: 20
+            property real tileHeight: 260
+            property real tileWidth: (width - (columns - 1) * spacing) / columns
+
+            Repeater {
+                model: carController.tiles
+                Rectangle {
+                    width: grid.tileWidth
+                    height: grid.tileHeight
+                    radius: 24
+                    color: tileMA.pressed ? "#1e2c47" : "#131a29"
+                    Image {
+                        anchors.top: parent.top
+                        anchors.topMargin: Math.max(14, parent.height * 0.13)
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: Math.min(96, parent.height * 0.42)
+                        height: width
+                        fillMode: Image.PreserveAspectFit
+                        source: modelData.icon !== "" ? "file://" + modelData.icon : ""
+                        visible: modelData.icon !== ""
+                    }
+                    Text {
+                        anchors.top: parent.top
+                        anchors.topMargin: Math.max(14, parent.height * 0.14)
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        font.pixelSize: Math.min(84, parent.height * 0.38)
+                        visible: modelData.icon === ""
+                        text: root.categoryIcon(modelData.category)
+                    }
+                    Text {
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 22
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: parent.width - 24
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        color: "#ffffff"
+                        font.pixelSize: 28
+                        font.bold: true
+                        text: modelData.name
+                    }
+                    MouseArea {
+                        id: tileMA
+                        anchors.fill: parent
+                        onClicked: carController.tileClicked(index)
+                    }
                 }
             }
         }

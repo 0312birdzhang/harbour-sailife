@@ -1,0 +1,8 @@
+[Unit]
+Description=Restore persistent Sailife USB mode
+Wants=usb-moded.service
+After=usb-moded.service dbus.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/carlife/usb_mode_restore.sh

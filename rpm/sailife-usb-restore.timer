@@ -1,0 +1,11 @@
+[Unit]
+Description=Monitor persistent Sailife USB mode
+
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=sailife-usb-restore.service
+
+[Install]
+WantedBy=timers.target
