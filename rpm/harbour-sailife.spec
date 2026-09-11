@@ -189,6 +189,6 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 * Sun Sep 06 2026 harbour-sailife 0.1.0-2
 - Persist the Sailife USB mode after installation and device restart.
 
-* Thu Sep 04 2026 harbour-sailife 0.1.0-1
+* Fri Sep 04 2026 harbour-sailife 0.1.0-1
 - Initial RPM: vehicle projection daemon with staged USB reconnect, virtual
   compositor, launcher UI, x264 capture, boot-autostart systemd service.
